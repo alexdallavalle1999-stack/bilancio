@@ -176,12 +176,13 @@ export function monthRange(from, to) {
 }
 
 // Totali mensili per tipo e filtro categorie (Set di id o null = tutte)
-export function monthlySeries(type, months, catFilter = null) {
+export function monthlySeries(type, months, catFilter = null, skipExtra = false) {
   const idx = new Map(months.map((m, i) => [m, i]));
   const vals = months.map(() => 0);
   for (const t of S.transactions) {
     if (t.type !== type) continue;
     if (catFilter && !catFilter.has(t.categoryId ?? '__none')) continue;
+    if (skipExtra && t.extra) continue;
     const i = idx.get(ym(t.date));
     if (i != null) vals[i] += t.amount;
   }

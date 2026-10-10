@@ -34,6 +34,13 @@ let keepSel = null;
 function saveEx() { try { localStorage.setItem(EX_KEY, JSON.stringify([...excl])); } catch { /* resta solo per questa sessione */ } }
 function toggleEx(k) { if (excl.has(k)) excl.delete(k); else excl.add(k); saveEx(); rerender(); }
 function clearEx() { excl.clear(); saveEx(); rerender(); }
+// Movimenti straordinari: esclusi dai grafici finché l'interruttore è attivo
+const XKEY = 'bilancio.senzaStraordinari';
+let skipExtra = (() => { try { return localStorage.getItem(XKEY) !== '0'; } catch { return true; } })();
+const nExtra = () => S.transactions.filter((t) => t.extra).length;
+const series = (type, months, filt = null) => monthlySeries(type, months, filt, skipExtra && nExtra() > 0);
+const skipTx = (t) => skipExtra && t.extra;
+function setSkipExtra(v) { skipExtra = v; try { localStorage.setItem(XKEY, v ? '1' : '0'); } catch { /* sessione */ } rerender(); }
 const masked = (vals, months) => vals.map((v, i) => (isEx(months[i]) ? null : v));
 const sumOf = (vals) => vals.reduce((a, v) => a + (v ?? 0), 0);
 const countOf = (vals) => vals.filter((v) => v != null).length;
@@ -49,9 +56,11 @@ function movAvg(vals, k) {
 }
 
 function exBar() {
-  if (!excl.size) return '';
+  const ne = nExtra();
+  const x = ne ? `<label class="remember exx"><input type="checkbox" data-skipx ${skipExtra ? 'checked' : ''}> Senza i movimenti straordinari (${ne})</label>` : '';
+  if (!excl.size) return x;
   const keys = [...excl].sort();
-  return `<div class="exbar"><span class="small ink2">Esclusi dai grafici:</span>
+  return `${x}<div class="exbar"><span class="small ink2">Esclusi dai grafici:</span>
     ${keys.map((k) => `<button class="chip on" data-ex="${esc(k)}" aria-label="Rimetti ${esc(exLabel(k))}">${esc(exLabel(k))} ✕</button>`).join('')}
     <button class="link" data-exall>Rimetti tutti</button></div>`;
 }
@@ -125,6 +134,7 @@ route('dati', async (root) => {
     if (!b || b.closest('.cx-read')) return;
     if ('exall' in b.dataset) clearEx(); else toggleEx(b.dataset.ex);
   });
+  root.addEventListener('change', (e) => { if (e.target.matches('[data-skipx]')) setSkipExtra(e.target.checked); });
   root.addEventListener('toggle', (e) => { if (e.target.matches?.('details.vals')) tableOpen = e.target.open; }, true);
   render();
   return destroyCharts;
@@ -158,8 +168,8 @@ function renderTrend(el) {
   const pre = ma ? monthRange(ymAdd(start, -(ma - 1)), end) : months;
   const off = pre.length - months.length;
   const filt = s.cat ? new Set([s.cat]) : null;
-  const expAll = masked(monthlySeries('expense', pre, s.show === 'expense' ? filt : null), pre);
-  const incAll = masked(monthlySeries('income', pre, s.show === 'income' ? filt : null), pre);
+  const expAll = masked(series('expense', pre, s.show === 'expense' ? filt : null), pre);
+  const incAll = masked(series('income', pre, s.show === 'income' ? filt : null), pre);
   const exp = expAll.slice(off), inc = incAll.slice(off);
   const labels = months.map((m) => { const [y, mm] = m.split('-'); return mm === '01' || months.length <= 13 ? `${MONTHS_SHORT[+mm - 1]} ${y.slice(2)}` : MONTHS_SHORT[+mm - 1]; });
   const cE = css('--exp'), cI = css('--inc'), cInk = css('--ink-2');
@@ -254,7 +264,7 @@ function renderCats(el) {
   for (const t of S.transactions) {
     if (t.type !== s.type) continue;
     const m = ym(t.date);
-    if (m < from || m > to || isEx(m)) continue;
+    if (m < from || m > to || isEx(m) || skipTx(t)) continue;
     const k = t.categoryId || '__none';
     const x = sums.get(k) || { sum: 0, n: 0 };
     x.sum += t.amount; x.n++;
@@ -289,14 +299,14 @@ function categoryDetail(id) {
   const end = ym(today());
   const months = monthRange(ymAdd(end, -23), end);
   const pre = monthRange(ymAdd(end, -25), end);
-  const all = masked(monthlySeries(c.type, pre, new Set([id])), pre);
+  const all = masked(series(c.type, pre, new Set([id])), pre);
   const v = all.slice(2);
   const mav = movAvg(all, 3).slice(2);
   const col = css(c.type === 'expense' ? '--exp' : '--inc');
   const first = firstMonth();
   const perYear = dataYears().map((y) => {
     let sum = 0, n = 0;
-    for (const t of S.transactions) if (t.categoryId === id && t.date.startsWith(y) && !isEx(ym(t.date))) { sum += t.amount; n++; }
+    for (const t of S.transactions) if (t.categoryId === id && t.date.startsWith(y) && !isEx(ym(t.date)) && !skipTx(t)) { sum += t.amount; n++; }
     const ms = monthRange(`${y}-01`, `${y}-12`).filter((m) => m >= first && m <= end && !isEx(m)).length;
     return [y, sum, n, ms];
   }).filter(([, , n]) => n);
@@ -322,11 +332,11 @@ function categoryDetail(id) {
 /* ---------- Confronta ---------- */
 
 function voceSeries(voce, months) {
-  if (voce === 'exp') return monthlySeries('expense', months);
-  if (voce === 'inc') return monthlySeries('income', months);
-  if (voce === 'net') { const i = monthlySeries('income', months), e = monthlySeries('expense', months); return i.map((x, k) => x - e[k]); }
+  if (voce === 'exp') return series('expense', months);
+  if (voce === 'inc') return series('income', months);
+  if (voce === 'net') { const i = series('income', months), e = series('expense', months); return i.map((x, k) => x - e[k]); }
   const c = S.cat.get(voce);
-  return monthlySeries(c?.type || 'expense', months, new Set([voce]));
+  return series(c?.type || 'expense', months, new Set([voce]));
 }
 function voceLabel(voce) {
   return voce === 'exp' ? 'Tutte le uscite' : voce === 'inc' ? 'Tutte le entrate' : voce === 'net' ? 'Risparmio' : S.cat.get(voce)?.name || '';

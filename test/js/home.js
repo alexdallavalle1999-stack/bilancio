@@ -14,7 +14,7 @@ const REPEATS = [
 ];
 
 // La bozza sopravvive al cambio di pagina (non al riavvio dell'app)
-const draft = { type: 'expense', terms: [{ op: '+', d: '' }], categoryId: null, date: null, note: '', repeat: '', accountId: null, toAccountId: null };
+const draft = { type: 'expense', terms: [{ op: '+', d: '' }], extra: false, categoryId: null, date: null, note: '', repeat: '', accountId: null, toAccountId: null };
 
 // L'importo è una piccola somma: termini con segno, es. 12,50 + 8,30 − 2
 const termCents = (d) => {
@@ -81,6 +81,7 @@ route('home', (root) => {
         <label class="qe-link ${d !== today() ? 'on' : ''}">${esc(dateLabel(d))}<input type="date" value="${d}" data-f="date" aria-label="Data"></label>
         <button class="qe-link ${draft.note ? 'on' : ''}" data-act="note">${draft.note ? `“${esc(draft.note.length > 18 ? draft.note.slice(0, 17) + '…' : draft.note)}”` : 'Aggiungi nota'}</button>
         ${draft.repeat ? `<button class="qe-link on" data-act="options">↻ ${esc(rep[1].replace('Ogni', 'ogni'))}</button>` : ''}
+        ${draft.extra && draft.type !== 'transfer' ? '<button class="qe-link on" data-act="options">✦ straordinaria</button>' : ''}
         ${multi && draft.accountId !== S.settings.defaultAccountId ? `<button class="qe-link on" data-act="options">${esc(accName(draft.accountId))}</button>` : ''}
         <button class="qe-link" data-act="options">Opzioni</button>
       </div>`;
@@ -162,6 +163,7 @@ route('home', (root) => {
       categoryId: draft.type === 'transfer' ? null : draft.categoryId,
       accountId: draft.accountId, toAccountId: draft.type === 'transfer' ? draft.toAccountId : null,
       note: draft.note.trim(),
+      extra: draft.type !== 'transfer' && draft.extra,
     };
     let recurringId = null;
     let msg = draft.type === 'transfer' ? `Giroconto di ${fmtEur(amount)} salvato` : `${cap(WORD[draft.type])} di ${fmtEur(amount)} salvata`;
@@ -177,7 +179,7 @@ route('home', (root) => {
     }
     let saved = null;
     if (!draft.repeat || date <= today()) saved = await put('transactions', { id: uid('t'), ...base, source: 'manual', bank: null, importKey: null, recurringId });
-    resetAmount(); draft.categoryId = null; draft.note = ''; draft.repeat = '';
+    resetAmount(); draft.categoryId = null; draft.note = ''; draft.repeat = ''; draft.extra = false;
     if (draft.type === 'transfer') draft.type = 'expense';
     draw();
     toast(msg, saved ? { action: 'Annulla', onAction: () => del('transactions', saved.id) } : {});
@@ -207,6 +209,7 @@ route('home', (root) => {
     f.innerHTML = `
       ${draft.type !== 'transfer' ? `<label class="field"><span>Ripeti</span><select class="input" name="rep">${REPEATS.map(([v, l]) => `<option value="${v}" ${draft.repeat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <p class="tiny muted" style="margin-top:6px">Le ripetizioni vengono aggiunte da sole il giorno previsto. Le trovi in Altro → Spese ricorrenti.</p>` : ''}
+      ${draft.type !== 'transfer' ? `<label class="remember" style="font-size:15px;align-items:flex-start"><input type="checkbox" name="extra" ${draft.extra ? 'checked' : ''} style="margin-top:2px"> <span>Movimento straordinario<br><span class="tiny muted">Una spesa (o entrata) eccezionale: nei grafici puoi escluderla con un tocco.</span></span></label>` : ''}
       ${multi && draft.type !== 'transfer' ? `<label class="field"><span>Conto</span><select class="input" name="acc">${accountOptions(draft.accountId)}</select></label>` : ''}
       ${draft.type !== 'transfer' ? '<button type="button" class="btn line block" data-tr>↔ Giroconto tra i tuoi conti</button>' : ''}
       <button class="btn block">Fatto</button>`;
@@ -226,7 +229,9 @@ route('home', (root) => {
       e.preventDefault();
       const rep = f.querySelector('[name=rep]');
       const acc = f.querySelector('[name=acc]');
+      const ex = f.querySelector('[name=extra]');
       if (rep) draft.repeat = rep.value;
+      if (ex) draft.extra = ex.checked;
       if (acc) draft.accountId = acc.value;
       sh.close();
       draw();

@@ -72,7 +72,7 @@ export function itemHtml(t, { showDate = false } = {}) {
   const sign = t.type === 'expense' ? '−' : t.type === 'income' ? '+' : '';
   const cls = t.type === 'expense' ? 'exp' : t.type === 'income' ? 'inc' : '';
   const sub = [showDate ? fmtDayShort(t.date) : '', txSubtitle(t)].filter(Boolean).join(' · ');
-  const tags = `${!c && t.type !== 'transfer' ? '<span class="tag warn">senza voce</span>' : ''}${t.recurringId ? '<span class="tag">↻</span>' : ''}`;
+  const tags = `${!c && t.type !== 'transfer' ? '<span class="tag warn">senza voce</span>' : ''}${t.recurringId ? '<span class="tag">↻</span>' : ''}${t.extra ? '<span class="tag">✦ straord.</span>' : ''}`;
   return `<button class="item" data-id="${t.id}">
     <span class="bubble">${esc(icon)}</span>
     <span class="grow"><span class="t1" style="display:block">${esc(txTitle(t))}${tags}</span><span class="t2" style="display:block">${esc(sub) || '&nbsp;'}</span></span>
@@ -141,6 +141,7 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
     toAccountId: tx?.toAccountId || null,
     note: tx?.note || '',
     noteOpen: !!tx?.note,
+    extra: !!tx?.extra,
     repeat: false,
     freq: 'month',
     every: 1,
@@ -164,6 +165,7 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
           <select data-f="account" aria-label="Conto" style="position:absolute;inset:0;opacity:0">${accountOptions(st.accountId)}</select></span>` : ''}
         <button type="button" class="meta ${st.noteOpen ? 'on' : ''}" data-act="note">${ICONS.note}<span>Nota</span></button>
         ${editing ? '' : `<button type="button" class="meta ${st.repeat ? 'on' : ''}" data-act="repeat">${ICONS.repeat}<span>Ripeti</span></button>`}
+        ${st.type !== 'transfer' ? `<button type="button" class="meta ${st.extra ? 'on' : ''}" data-act="extra" aria-pressed="${st.extra}"><span aria-hidden="true">✦</span><span>Straordinaria</span></button>` : ''}
       </div>
       ${st.noteOpen ? `<input class="input note-input" data-f="note" placeholder="Nota (facoltativa)" value="${esc(st.note)}" maxlength="140" autocomplete="off">` : ''}
       ${st.repeat ? repeatHtml() : ''}
@@ -252,6 +254,8 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
       if (st.noteOpen) root.querySelector('[data-f="note"]')?.focus();
     } else if (b.dataset.act === 'repeat') {
       st.repeat = !st.repeat; draw();
+    } else if (b.dataset.act === 'extra') {
+      st.extra = !st.extra; draw();
     } else if (b.dataset.act === 'save') {
       save();
     } else if (b.dataset.act === 'delete') {
@@ -289,6 +293,7 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
       categoryId: st.type === 'transfer' ? null : st.categoryId,
       accountId: st.accountId, toAccountId: st.type === 'transfer' ? st.toAccountId : null,
       note: st.note.trim(),
+      extra: st.type !== 'transfer' && st.extra,
     };
     if (editing) {
       await put('transactions', { ...tx, ...base });
@@ -346,16 +351,18 @@ route('movimenti', (root, params) => {
     $('#mlabel').textContent = cap(ymLabel(st.month));
     $('#mpick').value = st.month;
     const nNone = uncategorized().length;
+    const nExtra = S.transactions.filter((t) => t.extra).length;
     const catName = st.cat ? S.cat.get(st.cat)?.name : null;
-    $('#filters').innerHTML = [['all', 'Tutti'], ['expense', 'Uscite'], ['income', 'Entrate'], ['transfer', 'Giroconti'], ['none', `Da classificare${nNone ? ` (${nNone})` : ''}`]]
-      .filter(([k]) => k !== 'none' || nNone || st.f === 'none')
+    $('#filters').innerHTML = [['all', 'Tutti'], ['expense', 'Uscite'], ['income', 'Entrate'], ['transfer', 'Giroconti'], ['none', `Da classificare${nNone ? ` (${nNone})` : ''}`], ['extra', `Straordinari (${nExtra})`]]
+      .filter(([k]) => (k !== 'none' || nNone || st.f === 'none') && (k !== 'extra' || nExtra || st.f === 'extra'))
       .map(([k, l]) => `<button class="chip ${st.f === k && !st.cat ? 'on' : ''}" data-f="${k}">${l}</button>`).join('')
       + `<button class="chip ${st.cat ? 'on' : ''}" data-f="cat">${catName ? esc(catName) + ' ✕' : 'Per voce…'}</button>`;
     const q = norm(st.q);
-    const all = st.f === 'none' && !st.cat;
+    const all = (st.f === 'none' || st.f === 'extra') && !st.cat;
     let list = S.transactions.filter((t) => {
       if (st.cat) { if (t.categoryId !== st.cat) return false; }
       else if (st.f === 'none') { if (t.type === 'transfer' || t.categoryId) return false; }
+      else if (st.f === 'extra') { if (!t.extra) return false; }
       else if (st.f !== 'all' && t.type !== st.f) return false;
       if (q) {
         const hay = norm(`${txTitle(t)} ${t.note} ${t.bank || ''} ${fmtNum(t.amount)}`);
@@ -374,7 +381,7 @@ route('movimenti', (root, params) => {
       $('#mlist').innerHTML = `<div class="empty card"><h3>${q ? 'Nessun risultato' : 'Nessun movimento'}</h3><p class="small">${q ? 'Prova con un\'altra parola o un importo, es. 6,99.' : 'In questo periodo non ci sono movimenti con questi filtri.'}</p></div>`;
       return;
     }
-    let html = scope ? `<p class="small muted" style="margin:0 4px 8px">${scope}: ${list.length} movimenti${list.length > 400 ? ' (mostro i più recenti 400)' : ''}</p>` : '';
+    let html = scope ? `<p class="small muted" style="margin:0 4px 8px">${scope}: ${list.length === 1 ? '1 movimento' : `${fmtNum(list.length * 100, { decimals: 0 })} movimenti`}${list.length > 400 ? ' (mostro i più recenti 400)' : ''}</p>` : '';
     html += '<div class="list">';
     let day = null;
     for (const t of shown) {
