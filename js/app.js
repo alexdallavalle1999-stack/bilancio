@@ -1,5 +1,5 @@
 // Avvio, navigazione, Home (inserimento rapido) e lista Movimenti
-import { S, load, put, del, putMany, onChange, requestPersistence } from './store.js';
+import { S, load, put, del, putMany, onChange, requestPersistence, IS_TEST } from './store.js';
 import {
   ensureDefaults, runRecurring, balance, monthTotals, rankedCategories, catOf, txTitle, txSubtitle, uncategorized,
   activeAccounts, accName, nextAfter, describeRecurring,
@@ -41,81 +41,28 @@ async function renderRoute() {
   view.replaceChildren(root);
   try { cleanup = await r.render(root, params); } catch (e) { console.error(e); root.innerHTML = `<div class="empty"><h3>Qualcosa non ha funzionato</h3><p>${esc(e.message)}</p></div>`; }
   window.scrollTo(0, keepScroll);
+  updateBadges();
+}
+
+// Numerino sui movimenti da classificare, pallino su Altro quando serve un backup
+export function updateBadges() {
+  const n = uncategorized().length;
+  const badge = document.querySelector('#tabbar [data-tab="movimenti"] .badge');
+  if (badge) { badge.textContent = n > 99 ? '99+' : String(n); badge.hidden = !n; }
+  const st = S.settings;
+  const days = st.lastBackupAt ? daysBetween(st.lastBackupAt.slice(0, 10), today()) : null;
+  const due = S.transactions.length > 0 && (st.changesSinceBackup || 0) > 0 && (days == null || days >= (st.backupEveryDays || 7));
+  const dot = document.querySelector('#tabbar [data-tab="altro"] .dot');
+  if (dot) dot.hidden = !(due || (st.dropbox?.refresh && st.dropbox?.lastError));
 }
 
 onChange(() => {
+  updateBadges();
   if (!current) return;
   const r = routes[current.name];
   if (r.live === true) renderRoute();
   else if (typeof r.live === 'function') r.live();
 });
-
-/* ======================= HOME ======================= */
-
-route('home', (root) => {
-  root.innerHTML = `<div id="banners" class="stack"></div>
-    <header class="month-head" id="summary"></header>
-    <section class="card entry" id="entry"></section>
-    <div class="section-title"><h2>Ultimi movimenti</h2><a class="link" href="#/movimenti">Vedi tutti</a></div>
-    <div id="recent"></div>`;
-  const refresh = () => { renderSummary(); renderRecent(); renderBanners(); };
-  refresh();
-  mountEntryForm($('#entry'), { onSaved: () => {} });
-  routes.home.live = refresh;
-}, { live: () => {} });
-
-function renderSummary() {
-  const el = $('#summary');
-  if (!el) return;
-  const key = ym(today());
-  const { inc, exp, net } = monthTotals(key);
-  const acc = S.acc.get(S.settings.defaultAccountId) || activeAccounts()[0];
-  const bal = acc ? balance(acc.id) : 0;
-  const pct = inc > 0 ? Math.round((exp / inc) * 100) : null;
-  el.innerHTML = `
-    <div class="mh-top">
-      <span class="month">${cap(ymLabel(key))}</span>
-      <a class="saldo" href="#/altro/conti">${esc(acc?.name || 'Saldo')}<b>${fmtEur(bal)}</b></a>
-    </div>
-    <div class="mh-main">
-      <div><div class="mh-net ${net < 0 ? 'exp' : ''}">${net < 0 ? '−' : net > 0 ? '+' : ''}${fmtNum(Math.abs(net))}<small> €</small></div>
-        <div class="mh-label">Bilancio del mese</div></div>
-      <div class="mh-side"><div class="inc">+${fmtNum(inc)} €</div><div class="exp">−${fmtNum(exp)} €</div></div>
-    </div>
-    <div class="ratio ${pct != null && pct > 100 ? 'over' : ''}" role="img" aria-label="Uscite pari al ${pct ?? 0}% delle entrate"><span style="width:${Math.min(100, pct ?? (exp > 0 ? 100 : 0))}%"></span></div>
-    <p class="tiny muted" style="margin-top:7px">${!inc && !exp ? 'Nessun movimento questo mese' : !inc ? 'Nessuna entrata registrata questo mese' : exp > inc ? `Uscite superiori alle entrate di ${fmtEur(exp - inc)}` : `Hai speso il ${pct}% di quanto è entrato`}</p>`;
-  el.querySelector('.saldo').style.textDecoration = 'none';
-}
-
-function renderBanners() {
-  const el = $('#banners');
-  if (!el) return;
-  const out = [];
-  if (!S.transactions.length) {
-    out.push(`<div class="banner neutral"><span class="grow">Hai già un backup o i dati iniziali? Ripristinali prima di iniziare.</span><a class="btn small" href="#/altro/backup">Ripristina</a></div>`);
-  }
-  const n = uncategorized().length;
-  if (n) out.push(`<div class="banner"><span class="grow">${n === 1 ? '1 movimento' : `${n} movimenti`} da classificare</span><a class="btn small" href="#/movimenti?f=none">Classifica</a></div>`);
-  const st = S.settings;
-  if (S.transactions.length && (st.changesSinceBackup || 0) > 0) {
-    const days = st.lastBackupAt ? daysBetween(st.lastBackupAt.slice(0, 10), today()) : null;
-    if (days == null || days >= (st.backupEveryDays || 7)) {
-      out.push(`<div class="banner"><span class="grow">${days == null ? 'Non hai ancora fatto un backup.' : `Ultimo backup ${days} giorni fa.`} Salvane uno su Drive.</span><a class="btn small" href="#/altro/backup?quick=1">Backup</a></div>`);
-    }
-  }
-  el.innerHTML = out.join('');
-  el.style.marginBottom = out.length ? '14px' : '0';
-}
-
-function renderRecent() {
-  const el = $('#recent');
-  if (!el) return;
-  const items = S.transactions.slice(-8).reverse();
-  el.innerHTML = items.length
-    ? `<div class="list">${items.map((t) => itemHtml(t, { showDate: true })).join('')}</div>`
-    : `<div class="empty card"><h3>Nessun movimento</h3><p class="small">Inserisci la prima spesa qui sopra.</p></div>`;
-  el.querySelector('.list')?.addEventListener('click', onItemClick);
-}
 
 /* ---------- Riga movimento ---------- */
 
@@ -125,7 +72,7 @@ export function itemHtml(t, { showDate = false } = {}) {
   const sign = t.type === 'expense' ? '−' : t.type === 'income' ? '+' : '';
   const cls = t.type === 'expense' ? 'exp' : t.type === 'income' ? 'inc' : '';
   const sub = [showDate ? fmtDayShort(t.date) : '', txSubtitle(t)].filter(Boolean).join(' · ');
-  const tags = `${!c && t.type !== 'transfer' ? '<span class="tag warn">senza voce</span>' : ''}${t.recurringId ? '<span class="tag">↻</span>' : ''}`;
+  const tags = `${!c && t.type !== 'transfer' ? '<span class="tag warn">senza voce</span>' : ''}${t.recurringId ? '<span class="tag">↻</span>' : ''}${t.extra ? '<span class="tag">✦ straord.</span>' : ''}${t.tricount ? '<span class="tag">comune</span>' : ''}`;
   return `<button class="item" data-id="${t.id}">
     <span class="bubble">${esc(icon)}</span>
     <span class="grow"><span class="t1" style="display:block">${esc(txTitle(t))}${tags}</span><span class="t2" style="display:block">${esc(sub) || '&nbsp;'}</span></span>
@@ -194,6 +141,7 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
     toAccountId: tx?.toAccountId || null,
     note: tx?.note || '',
     noteOpen: !!tx?.note,
+    extra: !!tx?.extra,
     repeat: false,
     freq: 'month',
     every: 1,
@@ -217,10 +165,12 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
           <select data-f="account" aria-label="Conto" style="position:absolute;inset:0;opacity:0">${accountOptions(st.accountId)}</select></span>` : ''}
         <button type="button" class="meta ${st.noteOpen ? 'on' : ''}" data-act="note">${ICONS.note}<span>Nota</span></button>
         ${editing ? '' : `<button type="button" class="meta ${st.repeat ? 'on' : ''}" data-act="repeat">${ICONS.repeat}<span>Ripeti</span></button>`}
+        ${st.type !== 'transfer' ? `<button type="button" class="meta ${st.extra ? 'on' : ''}" data-act="extra" aria-pressed="${st.extra}"><span aria-hidden="true">✦</span><span>Straordinaria</span></button>` : ''}
       </div>
       ${st.noteOpen ? `<input class="input note-input" data-f="note" placeholder="Nota (facoltativa)" value="${esc(st.note)}" maxlength="140" autocomplete="off">` : ''}
       ${st.repeat ? repeatHtml() : ''}
       ${tx?.bank ? `<p class="tiny muted" style="margin-top:10px">Dall'estratto conto: ${esc(tx.bank)}</p>` : ''}
+      ${tx?.tricount ? `<p class="tiny muted" style="margin-top:6px">Spesa comune da Tricount: “${esc(tx.tricount.desc)}”, totale ${fmtEur(tx.tricount.total)} ${tx.tricount.paidByMe ? 'pagato da te' : `pagato da ${esc(tx.tricount.by)}`}. Qui c'è solo la tua parte.</p>` : ''}
       ${tx?.recurringId ? `<p class="tiny muted" style="margin-top:6px">Creato da una spesa ricorrente. <a href="#/altro/ricorrenti">Gestisci</a></p>` : ''}
       <button type="button" class="btn block save-btn" data-act="save">${editing ? 'Salva modifiche' : `Salva ${TYPE_WORD[st.type]}`}</button>
       ${editing ? `<button type="button" class="btn block line" data-act="delete" style="margin-top:8px;color:var(--exp)">Elimina movimento</button>` : ''}`;
@@ -305,6 +255,8 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
       if (st.noteOpen) root.querySelector('[data-f="note"]')?.focus();
     } else if (b.dataset.act === 'repeat') {
       st.repeat = !st.repeat; draw();
+    } else if (b.dataset.act === 'extra') {
+      st.extra = !st.extra; draw();
     } else if (b.dataset.act === 'save') {
       save();
     } else if (b.dataset.act === 'delete') {
@@ -342,6 +294,7 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
       categoryId: st.type === 'transfer' ? null : st.categoryId,
       accountId: st.accountId, toAccountId: st.type === 'transfer' ? st.toAccountId : null,
       note: st.note.trim(),
+      extra: st.type !== 'transfer' && st.extra,
     };
     if (editing) {
       await put('transactions', { ...tx, ...base });
@@ -399,16 +352,18 @@ route('movimenti', (root, params) => {
     $('#mlabel').textContent = cap(ymLabel(st.month));
     $('#mpick').value = st.month;
     const nNone = uncategorized().length;
+    const nExtra = S.transactions.filter((t) => t.extra).length;
     const catName = st.cat ? S.cat.get(st.cat)?.name : null;
-    $('#filters').innerHTML = [['all', 'Tutti'], ['expense', 'Uscite'], ['income', 'Entrate'], ['transfer', 'Giroconti'], ['none', `Da classificare${nNone ? ` (${nNone})` : ''}`]]
-      .filter(([k]) => k !== 'none' || nNone || st.f === 'none')
+    $('#filters').innerHTML = [['all', 'Tutti'], ['expense', 'Uscite'], ['income', 'Entrate'], ['transfer', 'Giroconti'], ['none', `Da classificare${nNone ? ` (${nNone})` : ''}`], ['extra', `Straordinari (${nExtra})`]]
+      .filter(([k]) => (k !== 'none' || nNone || st.f === 'none') && (k !== 'extra' || nExtra || st.f === 'extra'))
       .map(([k, l]) => `<button class="chip ${st.f === k && !st.cat ? 'on' : ''}" data-f="${k}">${l}</button>`).join('')
       + `<button class="chip ${st.cat ? 'on' : ''}" data-f="cat">${catName ? esc(catName) + ' ✕' : 'Per voce…'}</button>`;
     const q = norm(st.q);
-    const all = st.f === 'none' && !st.cat;
+    const all = (st.f === 'none' || st.f === 'extra') && !st.cat;
     let list = S.transactions.filter((t) => {
       if (st.cat) { if (t.categoryId !== st.cat) return false; }
       else if (st.f === 'none') { if (t.type === 'transfer' || t.categoryId) return false; }
+      else if (st.f === 'extra') { if (!t.extra) return false; }
       else if (st.f !== 'all' && t.type !== st.f) return false;
       if (q) {
         const hay = norm(`${txTitle(t)} ${t.note} ${t.bank || ''} ${fmtNum(t.amount)}`);
@@ -427,7 +382,7 @@ route('movimenti', (root, params) => {
       $('#mlist').innerHTML = `<div class="empty card"><h3>${q ? 'Nessun risultato' : 'Nessun movimento'}</h3><p class="small">${q ? 'Prova con un\'altra parola o un importo, es. 6,99.' : 'In questo periodo non ci sono movimenti con questi filtri.'}</p></div>`;
       return;
     }
-    let html = scope ? `<p class="small muted" style="margin:0 4px 8px">${scope}: ${list.length} movimenti${list.length > 400 ? ' (mostro i più recenti 400)' : ''}</p>` : '';
+    let html = scope ? `<p class="small muted" style="margin:0 4px 8px">${scope}: ${list.length === 1 ? '1 movimento' : `${fmtNum(list.length * 100, { decimals: 0 })} movimenti`}${list.length > 400 ? ' (mostro i più recenti 400)' : ''}</p>` : '';
     html += '<div class="list">';
     let day = null;
     for (const t of shown) {
@@ -464,6 +419,10 @@ route('movimenti', (root, params) => {
 
 /* ======================= AVVIO ======================= */
 
+// Errori imprevisti: mostrali, così si possono segnalare
+window.addEventListener('error', (e) => { if (e.message) toast(`Errore: ${e.message}`, { ms: 8000 }); });
+window.addEventListener('unhandledrejection', (e) => toast(`Errore: ${e.reason?.message || e.reason}`, { ms: 8000 }));
+
 async function start() {
   view.innerHTML = '<div class="splash">Bilancio</div>';
   try {
@@ -473,9 +432,13 @@ async function start() {
     return;
   }
   await ensureDefaults();
+  if (IS_TEST) { document.body.classList.add('is-test'); document.title = 'Bilancio Test'; }
+  await import('./home.js');
   await import('./more.js');
   await import('./stats.js');
   await import('./importer.js');
+  await import('./tricount.js');
+  (await import('./dropbox.js')).startAuto();
   const n = await runRecurring();
   if (n) toast(n === 1 ? 'Aggiunto 1 movimento ricorrente' : `Aggiunti ${n} movimenti ricorrenti`);
   window.addEventListener('hashchange', renderRoute);

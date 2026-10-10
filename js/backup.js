@@ -86,7 +86,7 @@ async function markDone() {
 }
 
 // Chiede (o recupera) la password del backup
-export async function askPassword({ forceNew = false } = {}) {
+export async function askPassword({ forceNew = false, mustRemember = false, note = '' } = {}) {
   const stored = !forceNew ? await getSecret('backupPassword') : null;
   if (stored) return stored;
   return new Promise((resolve) => {
@@ -94,10 +94,11 @@ export async function askPassword({ forceNew = false } = {}) {
     const f = document.createElement('form');
     f.className = 'stack';
     f.innerHTML = `
+      ${note ? `<p class="small" style="font-weight:600">${note}</p>` : ''}
       <p class="small ink2">Il file di backup viene cifrato con questa password: senza, nessuno può leggerlo, neanche su Drive. Se la dimentichi il backup non è recuperabile, quindi annotala in un posto sicuro.</p>
       <label class="field"><span>Password</span><input class="input" type="password" name="p1" minlength="6" required autocomplete="new-password"></label>
       <label class="field"><span>Ripeti password</span><input class="input" type="password" name="p2" minlength="6" required autocomplete="new-password"></label>
-      <label class="remember" style="font-size:14px"><input type="checkbox" name="rem" checked> Ricorda su questo telefono (backup con un tocco)</label>
+      <label class="remember" style="font-size:14px"><input type="checkbox" name="rem" checked ${mustRemember ? 'disabled' : ''}> Ricorda su questo telefono ${mustRemember ? '(serve per il backup automatico)' : '(backup con un tocco)'}</label>
       <p class="tiny muted" data-err style="color:var(--exp)"></p>
       <button class="btn block">Usa questa password</button>`;
     const sh = sheet({ title: 'Password del backup', body: f, onClose: () => resolve(result) });
@@ -106,7 +107,7 @@ export async function askPassword({ forceNew = false } = {}) {
       const p1 = f.querySelector('[name=p1]').value, p2 = f.querySelector('[name=p2]').value;
       if (p1.length < 6) { f.querySelector('[data-err]').textContent = 'Usa almeno 6 caratteri.'; return; }
       if (p1 !== p2) { f.querySelector('[data-err]').textContent = 'Le due password non coincidono.'; return; }
-      if (f.querySelector('[name=rem]').checked) await setSetting('backupPassword', p1);
+      if (mustRemember || f.querySelector('[name=rem]').checked) await setSetting('backupPassword', p1);
       result = p1;
       sh.close();
     };
@@ -128,7 +129,10 @@ export async function makeBackup({ download = false } = {}) {
 }
 
 export async function restoreFromFile(file) {
-  const text = await file.text();
+  return restoreFromText(await file.text());
+}
+
+export async function restoreFromText(text) {
   const obj = parseBackupText(text);
   let data;
   if (obj.encrypted) {

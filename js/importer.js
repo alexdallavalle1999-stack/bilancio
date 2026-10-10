@@ -94,7 +94,8 @@ function review(root, rows, accId, fileName) {
       const prevManual = it.how === 'manual' || it.how === 'propagated';
       if (keys.has(it.key)) { it.status = 'imported'; it.include = false; continue; }
       if (it.date < from) { it.status = 'before'; it.include = false; continue; }
-      const dup = pool.find((t) => !used.has(t.id) && t.amount === it.amount && Math.abs(daysBetween(t.date, it.date)) <= 3 &&
+      // una spesa comune pagata da te è registrata con la sola tua parte: si riconosce dal totale di Tricount
+      const dup = pool.find((t) => !used.has(t.id) && (t.amount === it.amount || (it.type === 'expense' && t.tricount?.paidByMe && t.tricount.total === it.amount)) && Math.abs(daysBetween(t.date, it.date)) <= 3 &&
         (t.type === it.type || (t.type === 'transfer' && ((it.type === 'expense' && t.accountId === accId) || (it.type === 'income' && t.toAccountId === accId)))));
       if (dup) { used.add(dup.id); it.status = 'dup'; it.dupOf = dup; if (!prevManual) it.include = false; continue; }
       it.status = 'new';

@@ -1,23 +1,18 @@
 # Bilancio
 
-App personale per spese ed entrate (PWA). I dati restano sul telefono, nell'archivio del browser; la copia di sicurezza è il backup cifrato che salvi su Drive.
+App personale per spese ed entrate (PWA). I dati restano sul telefono, nell'archivio del browser; la copia di sicurezza è il backup cifrato automatico su Dropbox (cartella `backup` dell'app).
 
-## Pubblicazione su GitHub Pages
-1. Su github.com crea un repository nuovo (es. `bilancio`), pubblico.
-2. "Add file" → "Upload files": trascina **il contenuto** di questa cartella (index.html deve stare nella radice del repository), poi "Commit changes".
-3. Settings → Pages → Source: "Deploy from a branch", Branch: `main`, cartella `/ (root)` → Save.
-4. Dopo un minuto l'app è su `https://<tuo-utente>.github.io/bilancio/`.
+Indirizzo: https://alexdallavalle1999-stack.github.io/bilancio/
 
 Nel repository c'è solo il codice: nessun dato personale.
 
 ## Sul telefono
 1. Apri l'indirizzo con Chrome → menu ⋮ → "Installa app" (o "Aggiungi a schermata Home").
-2. Altro → Backup e ripristino → "Scegli file di backup" → seleziona `dati_iniziali_bilancio.json`.
-3. Altro → Importa estratto conto → carica l'estratto BBVA (Excel o PDF).
-4. Altro → Backup e ripristino → "Crea backup e salva su Drive".
+2. Altro → Backup e ripristino → "Collega Dropbox" (stessa password dei backup di prima, se ne hai).
 
 ## Cambio telefono
-Installa l'app sul nuovo telefono, Altro → Backup e ripristino → "Scegli file di backup", prendi l'ultimo backup da Drive e inserisci la password.
+Installa l'app, Altro → Backup e ripristino → "Collega Dropbox" con la stessa password di prima, poi scegli l'ultimo backup.
+In alternativa "Scegli file di backup" con un file `bilancio_AAAA-MM-GG.txt` preso da Dropbox.
 
 ## Copia di prova
-La cartella `test/` è una copia dell'app per provare le novità: si apre da `https://<utente>.github.io/bilancio/test/`, si installa come app separata ("Bilancio Test") e usa un archivio dati suo, separato da quello dell'app vera.
+La cartella `test/` è una copia dell'app per provare le novità: si apre da `https://alexdallavalle1999-stack.github.io/bilancio/test/`, si installa come app separata ("Bilancio Test"), usa un archivio dati suo e su Dropbox salva nella cartella `prova`.
