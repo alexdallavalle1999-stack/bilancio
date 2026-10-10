@@ -21,6 +21,7 @@ route('altro', (root) => {
     ${due || dbx.status()?.lastError ? `<div class="banner" style="margin-bottom:14px"><span class="grow">${dbx.status()?.lastError ? esc(dbx.status().lastError) : days == null ? 'Non hai ancora fatto un backup.' : `Ultimo backup ${days} giorni fa.`}${dbx.isConnected() ? '' : ' Salvane uno.'}</span>${dbx.isConnected() ? '<a class="btn small" href="#/altro/backup">Controlla</a>' : '<button class="btn small" data-act="backup">Backup</button>'}</div>` : ''}
     <div class="menu">
       <a href="#/altro/importa"><span class="ic">📥</span><span class="grow">Importa estratto conto<small>PDF o Excel BBVA: le spese vengono classificate da sole</small></span><span class="chev">›</span></a>
+      <a href="#/altro/tricount"><span class="ic">🤝</span><span class="grow">Importa da Tricount<small>Spese comuni: registro solo la tua parte</small></span><span class="chev">›</span></a>
       <a href="#/altro/backup"><span class="ic">🔒</span><span class="grow">Backup e ripristino<small>${dbx.isConnected() ? `Automatico su Dropbox${last ? ` · ultimo il ${fmtDate(last.slice(0, 10))}` : ''}` : last ? `Ultimo backup il ${fmtDate(last.slice(0, 10))}` : 'Nessun backup ancora'}</small></span><span class="chev">›</span></a>
     </div>
     <div class="menu" style="margin-top:14px">

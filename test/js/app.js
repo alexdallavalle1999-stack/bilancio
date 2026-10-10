@@ -72,7 +72,7 @@ export function itemHtml(t, { showDate = false } = {}) {
   const sign = t.type === 'expense' ? '−' : t.type === 'income' ? '+' : '';
   const cls = t.type === 'expense' ? 'exp' : t.type === 'income' ? 'inc' : '';
   const sub = [showDate ? fmtDayShort(t.date) : '', txSubtitle(t)].filter(Boolean).join(' · ');
-  const tags = `${!c && t.type !== 'transfer' ? '<span class="tag warn">senza voce</span>' : ''}${t.recurringId ? '<span class="tag">↻</span>' : ''}${t.extra ? '<span class="tag">✦ straord.</span>' : ''}`;
+  const tags = `${!c && t.type !== 'transfer' ? '<span class="tag warn">senza voce</span>' : ''}${t.recurringId ? '<span class="tag">↻</span>' : ''}${t.extra ? '<span class="tag">✦ straord.</span>' : ''}${t.tricount ? '<span class="tag">comune</span>' : ''}`;
   return `<button class="item" data-id="${t.id}">
     <span class="bubble">${esc(icon)}</span>
     <span class="grow"><span class="t1" style="display:block">${esc(txTitle(t))}${tags}</span><span class="t2" style="display:block">${esc(sub) || '&nbsp;'}</span></span>
@@ -170,6 +170,7 @@ export function mountEntryForm(root, { tx = null, onSaved, onDeleted, bare = fal
       ${st.noteOpen ? `<input class="input note-input" data-f="note" placeholder="Nota (facoltativa)" value="${esc(st.note)}" maxlength="140" autocomplete="off">` : ''}
       ${st.repeat ? repeatHtml() : ''}
       ${tx?.bank ? `<p class="tiny muted" style="margin-top:10px">Dall'estratto conto: ${esc(tx.bank)}</p>` : ''}
+      ${tx?.tricount ? `<p class="tiny muted" style="margin-top:6px">Spesa comune da Tricount: “${esc(tx.tricount.desc)}”, totale ${fmtEur(tx.tricount.total)} ${tx.tricount.paidByMe ? 'pagato da te' : `pagato da ${esc(tx.tricount.by)}`}. Qui c'è solo la tua parte.</p>` : ''}
       ${tx?.recurringId ? `<p class="tiny muted" style="margin-top:6px">Creato da una spesa ricorrente. <a href="#/altro/ricorrenti">Gestisci</a></p>` : ''}
       <button type="button" class="btn block save-btn" data-act="save">${editing ? 'Salva modifiche' : `Salva ${TYPE_WORD[st.type]}`}</button>
       ${editing ? `<button type="button" class="btn block line" data-act="delete" style="margin-top:8px;color:var(--exp)">Elimina movimento</button>` : ''}`;
@@ -436,6 +437,7 @@ async function start() {
   await import('./more.js');
   await import('./stats.js');
   await import('./importer.js');
+  await import('./tricount.js');
   (await import('./dropbox.js')).startAuto();
   const n = await runRecurring();
   if (n) toast(n === 1 ? 'Aggiunto 1 movimento ricorrente' : `Aggiunti ${n} movimenti ricorrenti`);
