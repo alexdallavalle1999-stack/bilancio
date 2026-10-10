@@ -5,7 +5,7 @@ import { encryptBackup } from './backup.js';
 import { today } from './util.js';
 
 // Chiave pubblica dell'app registrata su Dropbox (non è un segreto: può stare nel codice)
-export const APP_KEY = '';
+export const APP_KEY = 'lecxca8koqw0fqb';
 const FOLDER = IS_TEST ? '/prova' : '/backup';
 export const KEEP = 10;
 const API = 'https://api.dropboxapi.com';
