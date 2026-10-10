@@ -18,3 +18,6 @@ Nel repository c'è solo il codice: nessun dato personale.
 
 ## Cambio telefono
 Installa l'app sul nuovo telefono, Altro → Backup e ripristino → "Scegli file di backup", prendi l'ultimo backup da Drive e inserisci la password.
+
+## Copia di prova
+La cartella `test/` è una copia dell'app per provare le novità: si apre da `https://<utente>.github.io/bilancio/test/`, si installa come app separata ("Bilancio Test") e usa un archivio dati suo, separato da quello dell'app vera.

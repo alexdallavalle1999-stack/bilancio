@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#EEF1EF" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0E1413" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Bilancio personale: spese, entrate e andamento nel tempo. I dati restano sul telefono.">
+  <title>Bilancio</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-180.png">
+  <link rel="preload" href="fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <main id="view" tabindex="-1"></main>
+  </div>
+
+  <nav id="tabbar" aria-label="Sezioni">
+    <a href="#/home" data-tab="home">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Inserisci</span>
+    </a>
+    <a href="#/movimenti" data-tab="movimenti">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+      <span>Movimenti</span>
+      <span class="badge" hidden></span>
+    </a>
+    <a href="#/dati" data-tab="dati">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M12 20V5M19 20v-6"/></svg>
+      <span>Dati</span>
+    </a>
+    <a href="#/altro" data-tab="altro">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+      <span>Altro</span>
+      <span class="dot" hidden></span>
+    </a>
+  </nav>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+
+  <noscript>Per usare Bilancio serve JavaScript attivo.</noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
