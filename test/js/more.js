@@ -62,6 +62,9 @@ function dropboxCard() {
     ${d.lastError ? `<div class="banner" style="font-size:14px">${esc(d.lastError)}</div>` : ''}
     <div>
       <div class="kv"><span>Ultimo backup su Dropbox</span><b>${esc(whenLabel(d.lastAt))}</b></div>
+      ${d.content ? `<div class="kv"><span>Contiene</span><b>${fmtNum(d.content.count * 100, { decimals: 0 })} movimenti</b></div>` : ''}
+      ${d.content?.last ? `<div class="kv"><span>Ultimo movimento inserito</span><b>${esc(S.cat.get(d.content.last.categoryId)?.name || d.content.last.note || (d.content.last.type === 'transfer' ? 'Giroconto' : 'Movimento'))} · ${esc(fmtEur(d.content.last.amount))}</b></div>` : ''}
+      <div class="kv"><span>Modifiche non ancora su Dropbox</span><b>${(S.settings.changesSinceBackup || 0) > 0 ? `${fmtNum((S.settings.changesSinceBackup) * 100, { decimals: 0 })} (vanno su a breve)` : 'nessuna'}</b></div>
       ${d.email ? `<div class="kv"><span>Account</span><b>${esc(d.email)}</b></div>` : ''}
       <div class="kv"><span>Copie conservate</span><b>${d.copies != null ? `${d.copies} su ${dbx.KEEP}` : '—'}</b></div>
     </div>
@@ -212,7 +215,7 @@ route('backup', async (root) => {
       catch (err) { toast(err.message); }
     }
   });
-}, { tab: 'altro', live: false });
+}, { tab: 'altro', live: true });
 
 /* ---------- Spese ricorrenti ---------- */
 route('ricorrenti', (root) => {

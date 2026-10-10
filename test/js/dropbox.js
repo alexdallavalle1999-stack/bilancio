@@ -130,6 +130,9 @@ export async function backupNow() {
     const pw = await getSecret('backupPassword');
     if (!pw) throw new Error('Per il backup automatico la password deve essere memorizzata su questo telefono.');
     const changesAtStart = S.settings.changesSinceBackup || 0;
+    // cosa contiene questa copia: numero di movimenti e l'ultimo inserito
+    const last = S.transactions.reduce((a, t) => ((t.created || '') > (a?.created || '') ? t : a), null);
+    const content = { count: S.transactions.length, last: last ? { id: last.id, type: last.type, amount: last.amount, date: last.date, categoryId: last.categoryId, note: last.note || '' } : null };
     const text = await encryptBackup(pw);
     await upload(`${FOLDER}/bilancio_${today()}.txt`, text);
     const list = await listBackups();
@@ -138,7 +141,7 @@ export async function backupNow() {
     await setSetting('lastBackupAt', now);
     // le modifiche fatte durante il caricamento restano da salvare
     await setSetting('changesSinceBackup', Math.max(0, (S.settings.changesSinceBackup || 0) - changesAtStart));
-    await setSetting('dropbox', { ...S.settings.dropbox, lastAt: now, lastError: null, copies: Math.min(list.length, KEEP) });
+    await setSetting('dropbox', { ...S.settings.dropbox, lastAt: now, lastError: null, copies: Math.min(list.length, KEEP), content });
     return now;
   })();
   try { return await running; } finally { running = null; }
