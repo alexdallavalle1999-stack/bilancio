@@ -1,7 +1,8 @@
-// Sezione Dati: andamento con media mobile, ripartizione per voce, confronti tra anni
+// Sezione Dati: andamento con media mobile, ripartizione per voce, confronti tra anni.
+// Si possono escludere mesi (o singoli valori) dai grafici, per togliere le spese eccezionali.
 import { route, go } from './app.js';
 import { S } from './store.js';
-import { monthlySeries, movingAverage, monthRange, firstMonth, catsOfType, years as dataYears } from './model.js';
+import { monthlySeries, monthRange, firstMonth, catsOfType, years as dataYears } from './model.js';
 import { $, esc, fmtNum, fmtEur, today, ym, ymAdd, ymLabel, MONTHS, MONTHS_SHORT, cap, plural } from './util.js';
 import { sheet } from './ui.js';
 import { drawChart } from './charts.js';
@@ -14,20 +15,59 @@ const charts = [];
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const isDark = () => document.documentElement.dataset.theme === 'dark' || (document.documentElement.dataset.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 const yearColor = (y) => (isDark() ? CAT_DARK : CAT_LIGHT)[((+today().slice(0, 4) - +y) % 8 + 8) % 8];
-const alpha = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
 const compact = (cents) => { const v = cents / 100; return Math.abs(v) >= 1000 ? `${(v / 1000).toLocaleString('it-IT', { maximumFractionDigits: 1 })}k` : v.toLocaleString('it-IT', { maximumFractionDigits: 0 }); };
+const money = (v) => fmtEur(v);
+const pct = (a, b) => (a ? Math.round(((b - a) / Math.abs(a)) * 1000) / 10 : null);
+const pctTxt = (d) => (d == null ? '—' : `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toLocaleString('it-IT')}%`);
 
 function destroyCharts() { while (charts.length) charts.pop().destroy(); }
 
+/* ---------- Mesi esclusi ('YYYY-MM' = un mese, '*-MM' = quel mese in ogni anno) ---------- */
+
+const EX_KEY = 'bilancio.esclusi';
+const excl = new Set((() => { try { return JSON.parse(localStorage.getItem(EX_KEY) || '[]'); } catch { return []; } })());
+const isEx = (m) => excl.has(m) || excl.has(`*-${m.slice(5, 7)}`);
+const exKeyFor = (m) => (excl.has(`*-${m.slice(5, 7)}`) ? `*-${m.slice(5, 7)}` : m);
+const exLabel = (k) => (k.startsWith('*-') ? `${MONTHS[+k.slice(2) - 1]} di ogni anno` : ymLabel(k));
+let rerender = () => {};
+let keepSel = null;
+function saveEx() { try { localStorage.setItem(EX_KEY, JSON.stringify([...excl])); } catch { /* resta solo per questa sessione */ } }
+function toggleEx(k) { if (excl.has(k)) excl.delete(k); else excl.add(k); saveEx(); rerender(); }
+function clearEx() { excl.clear(); saveEx(); rerender(); }
+const masked = (vals, months) => vals.map((v, i) => (isEx(months[i]) ? null : v));
+const sumOf = (vals) => vals.reduce((a, v) => a + (v ?? 0), 0);
+const countOf = (vals) => vals.filter((v) => v != null).length;
+const avgOf = (vals) => (countOf(vals) ? Math.round(sumOf(vals) / countOf(vals)) : 0);
+// media mobile che salta i mesi esclusi
+function movAvg(vals, k) {
+  return vals.map((_, i) => {
+    if (i < k - 1) return null;
+    let s = 0, n = 0;
+    for (let j = i - k + 1; j <= i; j++) if (vals[j] != null) { s += vals[j]; n++; }
+    return n ? Math.round(s / n) : null;
+  });
+}
+
+function exBar() {
+  if (!excl.size) return '';
+  const keys = [...excl].sort();
+  return `<div class="exbar"><span class="small ink2">Esclusi dai grafici:</span>
+    ${keys.map((k) => `<button class="chip on" data-ex="${esc(k)}" aria-label="Rimetti ${esc(exLabel(k))}">${esc(exLabel(k))} ✕</button>`).join('')}
+    <button class="link" data-exall>Rimetti tutti</button></div>`;
+}
+
+/* ---------- Grafici e tabelle ---------- */
+
 const barDs = (name, values, color, extra = {}) => ({ type: 'bar', name, values, ...(Array.isArray(color) ? { colors: color } : { color }), ...extra });
 const lineDs = (name, values, color, extra = {}) => ({ type: 'line', name, values, color, ...extra });
-const money = (v) => fmtEur(v);
 
-// Disegna un grafico nel riquadro .chart-box del contenitore; in caso di errore lo mostra al posto del grafico
 function plot(container, cfg) {
   const box = container.querySelector('.chart-box');
   try {
-    const c = drawChart(box, { axis: compact, value: money, ...cfg });
+    const c = drawChart(box, {
+      axis: compact, value: money, isOff: isEx, onToggle: (k) => toggleEx(k), onSelect: (i) => { keepSel = i; },
+      ...cfg, select: keepSel ?? cfg.select,
+    });
     charts.push(c);
     return c;
   } catch (e) {
@@ -37,14 +77,14 @@ function plot(container, cfg) {
   }
 }
 
-function legendHtml(items) {
-  return `<div class="legend">${items.map(([label, color, kind]) => `<span><i class="${kind === 'line' ? 'ln' : ''}" style="background:${color}"></i>${esc(label)}</span>`).join('')}</div>`;
-}
-
+// rows: [{ label, key?, cells: [{ v, key? }] }]
+let tableOpen = false;
 function tableHtml(head, rows) {
-  return `<details style="margin-top:10px"><summary class="small ink2" style="cursor:pointer;padding:6px 4px">Tabella dei valori</summary>
+  const tg = (key, html) => (key ? `<button class="tg ${isEx(key) ? 'off' : ''}" data-ex="${esc(exKeyFor(key))}">${html}</button>` : html);
+  return `<details class="vals" ${tableOpen ? 'open' : ''}><summary class="small ink2">Tabella dei valori</summary>
+    <p class="tiny muted" style="margin:4px 4px 2px">Tocca un mese o un valore per toglierlo dal grafico e dalle medie; toccalo di nuovo per rimetterlo.</p>
     <div class="table-wrap"><table class="data"><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map((r) => `<tr>${r.map((c, i) => `<td>${i === 0 ? esc(c) : c}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>`;
+    <tbody>${rows.map((r) => `<tr class="${r.key && isEx(r.key) ? 'off' : ''}"><td>${tg(r.key, esc(r.label))}</td>${r.cells.map((c) => `<td>${c.key ? tg(c.key, c.v) : c.v}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>`;
 }
 
 const cell = (v) => (v == null ? '—' : fmtNum(v));
@@ -70,13 +110,22 @@ route('dati', async (root) => {
   }
   root.innerHTML = `<div class="page-head"><h1>Dati</h1></div>
     <div class="seg stat-tabs">${[['trend', 'Andamento'], ['cats', 'Voci'], ['cmp', 'Confronta']].map(([k, l]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div id="exbar"></div>
     <div id="stat"></div>`;
   const render = () => {
     destroyCharts();
     root.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === state.tab));
+    $('#exbar').innerHTML = exBar();
     ({ trend: renderTrend, cats: renderCats, cmp: renderCmp })[state.tab]($('#stat'));
   };
-  root.querySelector('.stat-tabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) { state.tab = b.dataset.tab; render(); } };
+  rerender = render;
+  root.querySelector('.stat-tabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) { state.tab = b.dataset.tab; keepSel = null; render(); } };
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ex], [data-exall]');
+    if (!b || b.closest('.cx-read')) return;
+    if ('exall' in b.dataset) clearEx(); else toggleEx(b.dataset.ex);
+  });
+  root.addEventListener('toggle', (e) => { if (e.target.matches?.('details.vals')) tableOpen = e.target.open; }, true);
   render();
   return destroyCharts;
 }, { live: false });
@@ -92,56 +141,54 @@ function renderTrend(el) {
       <select class="input" data-k="show" aria-label="Cosa mostrare">${[['both', 'Entrate e uscite'], ['expense', 'Uscite'], ['income', 'Entrate'], ['net', 'Risparmio']].map(([v, l]) => `<option value="${v}" ${s.show === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select class="input" data-k="cat" aria-label="Voce" ${s.show === 'both' || s.show === 'net' ? 'disabled' : ''}><option value="">Tutte le voci</option>${catOptions(typeForCat, s.cat)}</select>
     </div>
-    <div class="card chart-card"><div class="chart-title"><h3 id="ttl"></h3><p id="sub"></p></div><div class="chart-box"></div><div id="lg"></div><div class="kpis" id="kpi"></div><div id="tbl"></div></div>`;
+    <div class="card chart-card"><div class="chart-title"><h3 id="ttl"></h3><p id="sub"></p></div><div class="chart-box"></div><div class="kpis" id="kpi"></div><div id="tbl"></div></div>`;
   el.querySelector('.filters').onchange = (e) => {
     const k = e.target.dataset.k;
     s[k] = e.target.value;
     if (k === 'show') s.cat = '';
-    destroyCharts(); renderTrend(el);
+    keepSel = null;
+    rerender();
   };
 
   const end = ym(today());
   const start = s.period === 'all' ? firstMonth() : ymAdd(end, -(+s.period) + 1);
   const months = monthRange(start, end);
   const ma = +s.ma;
-  // per la media mobile servono i mesi precedenti all'inizio del grafico
+  // per la media mobile servono anche i mesi prima dell'inizio del grafico
   const pre = ma ? monthRange(ymAdd(start, -(ma - 1)), end) : months;
   const off = pre.length - months.length;
   const filt = s.cat ? new Set([s.cat]) : null;
-  const expAll = monthlySeries('expense', pre, s.show === 'expense' ? filt : null);
-  const incAll = monthlySeries('income', pre, s.show === 'income' ? filt : null);
+  const expAll = masked(monthlySeries('expense', pre, s.show === 'expense' ? filt : null), pre);
+  const incAll = masked(monthlySeries('income', pre, s.show === 'income' ? filt : null), pre);
   const exp = expAll.slice(off), inc = incAll.slice(off);
   const labels = months.map((m) => { const [y, mm] = m.split('-'); return mm === '01' || months.length <= 13 ? `${MONTHS_SHORT[+mm - 1]} ${y.slice(2)}` : MONTHS_SHORT[+mm - 1]; });
   const cE = css('--exp'), cI = css('--inc'), cInk = css('--ink-2');
-  const ds = [];
-  const lg = [];
   const fade = ma ? 0.5 : 1;
   const catName = s.cat ? S.cat.get(s.cat)?.name : null;
-  let title, kpis, tHead, tRows;
+  const ds = [];
+  let title, kpis, tHead, rows;
+  const n = months.filter((m) => !isEx(m)).length;
+  const per = (v) => Math.round(v / (n || 1));
   if (s.show === 'both') {
     ds.push(barDs('Entrate', inc, cI, { opacity: fade }), barDs('Uscite', exp, cE, { opacity: fade }));
-    lg.push(['Entrate', cI], ['Uscite', cE]);
-    if (ma) {
-      ds.push(lineDs(`Media entrate (${ma} mesi)`, movingAverage(incAll, ma).slice(off), cI), lineDs(`Media uscite (${ma} mesi)`, movingAverage(expAll, ma).slice(off), cE));
-      lg.push([`Media entrate ${ma} mesi`, cI, 'line'], [`Media uscite ${ma} mesi`, cE, 'line']);
-    }
+    if (ma) ds.push(lineDs(`Media entrate (${ma} mesi)`, movAvg(incAll, ma).slice(off), cI), lineDs(`Media uscite (${ma} mesi)`, movAvg(expAll, ma).slice(off), cE));
     title = 'Entrate e uscite per mese';
-    const ti = inc.reduce((a, b) => a + b, 0), te = exp.reduce((a, b) => a + b, 0);
-    kpis = [['Entrate medie', fmtEur(Math.round(ti / months.length), { decimals: 0 })], ['Uscite medie', fmtEur(Math.round(te / months.length), { decimals: 0 })], ['Risparmio medio', fmtEur(Math.round((ti - te) / months.length), { decimals: 0, sign: true })]];
+    const ti = sumOf(inc), te = sumOf(exp);
+    kpis = [['Entrate medie', fmtEur(per(ti), { decimals: 0 })], ['Uscite medie', fmtEur(per(te), { decimals: 0 })], ['Risparmio medio', fmtEur(per(ti - te), { decimals: 0, sign: true })]];
     tHead = ['Mese', 'Entrate', 'Uscite', 'Risparmio'];
-    tRows = months.map((m, i) => [cap(ymLabel(m)), cell(inc[i]), cell(exp[i]), fmtNum(inc[i] - exp[i])]).reverse();
+    rows = months.map((m, i) => ({ label: cap(ymLabel(m)), key: m, cells: [{ v: cell(inc[i]) }, { v: cell(exp[i]) }, { v: inc[i] == null ? '—' : fmtNum(inc[i] - exp[i]) }] }));
   } else if (s.show === 'net') {
-    const netAll = incAll.map((v, i) => v - expAll[i]);
+    const netAll = incAll.map((v, i) => (v == null || expAll[i] == null ? null : v - expAll[i]));
     const net = netAll.slice(off);
     ds.push(barDs('Risparmio', net, net.map((v) => (v >= 0 ? cI : cE)), { opacity: fade }));
-    if (ma) { ds.push(lineDs(`Media ${ma} mesi`, movingAverage(netAll, ma).slice(off), cInk)); lg.push([`Media ${ma} mesi`, cInk, 'line']); }
+    const mav = ma ? movAvg(netAll, ma).slice(off) : [];
+    if (ma) ds.push(lineDs(`Media ${ma} mesi`, mav, cInk));
     title = 'Risparmio per mese (entrate − uscite)';
-    const tot = net.reduce((a, b) => a + b, 0);
-    const pos = net.filter((v) => v > 0).length;
-    kpis = [['Totale periodo', fmtEur(tot, { decimals: 0, sign: true })], ['Media al mese', fmtEur(Math.round(tot / months.length), { decimals: 0, sign: true })], ['Mesi in attivo', `${pos} su ${months.length}`]];
-    tHead = ['Mese', 'Risparmio', ma ? `Media ${ma}m` : ''];
-    const mav = ma ? movingAverage(netAll, ma).slice(off) : [];
-    tRows = months.map((m, i) => [cap(ymLabel(m)), fmtNum(net[i]), ma ? cell(mav[i]) : '']).reverse();
+    const tot = sumOf(net);
+    const pos = net.filter((v) => v != null && v > 0).length;
+    kpis = [['Totale periodo', fmtEur(tot, { decimals: 0, sign: true })], ['Media al mese', fmtEur(per(tot), { decimals: 0, sign: true })], ['Mesi in attivo', `${pos} su ${n}`]];
+    tHead = ['Mese', 'Risparmio', ...(ma ? [`Media ${ma}m`] : [])];
+    rows = months.map((m, i) => ({ label: cap(ymLabel(m)), key: m, cells: [{ v: cell(net[i]) }, ...(ma ? [{ v: cell(mav[i]) }] : [])] }));
   } else {
     const isE = s.show === 'expense';
     const all = isE ? expAll : incAll;
@@ -149,21 +196,24 @@ function renderTrend(el) {
     const col = isE ? cE : cI;
     const word = isE ? 'Uscite' : 'Entrate';
     ds.push(barDs(catName || word, v, col, { opacity: fade }));
-    const mav = ma ? movingAverage(all, ma).slice(off) : [];
-    if (ma) { ds.push(lineDs(`Media ${ma} mesi`, mav, cInk)); lg.push([catName || word, col], [`Media ${ma} mesi`, cInk, 'line']); }
+    const mav = ma ? movAvg(all, ma).slice(off) : [];
+    if (ma) ds.push(lineDs(`Media ${ma} mesi`, mav, cInk));
     title = catName ? `${catName}: ${word.toLowerCase()} per mese` : `${word} per mese`;
-    const tot = v.reduce((a, b) => a + b, 0);
-    let maxI = 0; v.forEach((x, i) => { if (x > v[maxI]) maxI = i; });
-    kpis = [['Totale periodo', fmtEur(tot, { decimals: 0 })], ['Media al mese', fmtEur(Math.round(tot / months.length), { decimals: 0 })], ['Mese più alto', v[maxI] ? `${cap(ymLabel(months[maxI], { short: true }))}` : '—']];
-    tHead = ['Mese', catName || word, ma ? `Media ${ma}m` : ''];
-    tRows = months.map((m, i) => [cap(ymLabel(m)), cell(v[i]), ma ? cell(mav[i]) : '']).reverse();
+    const tot = sumOf(v);
+    let maxI = -1; v.forEach((x, i) => { if (x != null && (maxI < 0 || x > v[maxI])) maxI = i; });
+    kpis = [['Totale periodo', fmtEur(tot, { decimals: 0 })], ['Media al mese', fmtEur(per(tot), { decimals: 0 })], ['Mese più alto', maxI >= 0 && v[maxI] ? cap(ymLabel(months[maxI], { short: true })) : '—']];
+    tHead = ['Mese', catName || word, ...(ma ? [`Media ${ma}m`] : [])];
+    rows = months.map((m, i) => ({ label: cap(ymLabel(m)), key: m, cells: [{ v: cell(v[i]) }, ...(ma ? [{ v: cell(mav[i]) }] : [])] }));
   }
+  const exN = months.length - n;
   $('#ttl').textContent = title;
-  $('#sub').textContent = `${cap(ymLabel(months[0]))} – ${ymLabel(months[months.length - 1])}${months[months.length - 1] === ym(today()) ? ' (mese in corso)' : ''}`;
-  $('#lg').innerHTML = '';
+  $('#sub').textContent = `${cap(ymLabel(months[0]))} – ${ymLabel(months[months.length - 1])}${months[months.length - 1] === ym(today()) ? ' (mese in corso)' : ''}${exN ? ` · ${plural(exN, 'mese escluso', 'mesi esclusi')}` : ''}`;
   $('#kpi').innerHTML = kpis.map(([a, b]) => `<div><span>${esc(a)}</span><b>${b}</b></div>`).join('');
-  $('#tbl').innerHTML = tableHtml(tHead.filter(Boolean), tRows.map((r) => r.slice(0, tHead.filter(Boolean).length)));
-  plot(el, { labels, tips: months.map((m) => cap(ymLabel(m))), series: ds, label: title });
+  $('#tbl').innerHTML = tableHtml(tHead, rows.reverse());
+  plot(el, {
+    labels, tips: months.map((m) => cap(ymLabel(m))), series: ds, label: title,
+    extra: (i) => ({ key: exKeyFor(months[i]), label: isEx(months[i]) ? 'Rimetti nel grafico' : 'Escludi questo mese' }),
+  });
 }
 
 /* ---------- Voci ---------- */
@@ -194,9 +244,9 @@ function renderCats(el) {
   el.querySelector('.filters').addEventListener('change', (e) => {
     if (e.target.dataset.k === 'period') s.period = e.target.value;
     if (e.target.dataset.k === 'month' && e.target.value) s.period = `m-${e.target.value}`;
-    renderCats(el);
+    rerender();
   });
-  el.querySelectorAll('[data-type]').forEach((b) => (b.onclick = () => { s.type = b.dataset.type; renderCats(el); }));
+  el.querySelectorAll('[data-type]').forEach((b) => (b.onclick = () => { s.type = b.dataset.type; rerender(); }));
 
   const [from, to, label] = periodRange(s.period);
   const sums = new Map();
@@ -204,7 +254,7 @@ function renderCats(el) {
   for (const t of S.transactions) {
     if (t.type !== s.type) continue;
     const m = ym(t.date);
-    if (m < from || m > to) continue;
+    if (m < from || m > to || isEx(m)) continue;
     const k = t.categoryId || '__none';
     const x = sums.get(k) || { sum: 0, n: 0 };
     x.sum += t.amount; x.n++;
@@ -212,7 +262,7 @@ function renderCats(el) {
     total += t.amount;
   }
   const list = [...sums.entries()].sort((a, b) => b[1].sum - a[1].sum);
-  const nMonths = monthRange(from, to).length;
+  const nMonths = monthRange(from, to).filter((m) => !isEx(m)).length;
   const body = $('#catbody');
   if (!list.length) { body.innerHTML = `<div class="empty card"><h3>Nessun movimento</h3><p class="small">${esc(label)}: nessuna ${s.type === 'expense' ? 'uscita' : 'entrata'}.</p></div>`; return; }
   const max = list[0][1].sum;
@@ -221,10 +271,10 @@ function renderCats(el) {
       ${nMonths > 1 ? `<p>Media ${fmtEur(Math.round(total / nMonths), { decimals: 0 })} al mese su ${nMonths} mesi</p>` : ''}</div>
       <div class="bars t-${s.type}" style="margin-top:10px">${list.map(([id, x]) => {
         const c = S.cat.get(id);
-        const pc = total ? Math.round((x.sum / total) * 1000) / 10 : 0;
+        const p = total ? Math.round((x.sum / total) * 1000) / 10 : 0;
         return `<button class="bar-row" data-cat="${id}"><span class="nm">${esc(c?.icon || '❔')} ${esc(c?.name || 'Da classificare')}</span><span class="vl">${fmtNum(x.sum)} €</span>
           <span class="track"><span style="width:${Math.max(1.5, (x.sum / max) * 100)}%"></span></span>
-          <span class="pc">${pc.toLocaleString('it-IT')}% · ${plural(x.n, 'movimento', 'movimenti')}</span></button>`;
+          <span class="pc">${p.toLocaleString('it-IT')}% · ${plural(x.n, 'movimento', 'movimenti')}</span></button>`;
       }).join('')}</div></div>
     <p class="tiny muted" style="margin:10px 4px">Tocca una voce per vederne l'andamento.</p>`;
   body.querySelector('.bars').onclick = (e) => {
@@ -239,24 +289,22 @@ function categoryDetail(id) {
   const end = ym(today());
   const months = monthRange(ymAdd(end, -23), end);
   const pre = monthRange(ymAdd(end, -25), end);
-  const all = monthlySeries(c.type, pre, new Set([id]));
+  const all = masked(monthlySeries(c.type, pre, new Set([id])), pre);
   const v = all.slice(2);
-  const mav = movingAverage(all, 3).slice(2);
+  const mav = movAvg(all, 3).slice(2);
   const col = css(c.type === 'expense' ? '--exp' : '--inc');
-  const yrs = dataYears();
-  const perYear = yrs.map((y) => {
+  const first = firstMonth();
+  const perYear = dataYears().map((y) => {
     let sum = 0, n = 0;
-    for (const t of S.transactions) if (t.categoryId === id && t.date.startsWith(y)) { sum += t.amount; n++; }
-    return [y, sum, n];
+    for (const t of S.transactions) if (t.categoryId === id && t.date.startsWith(y) && !isEx(ym(t.date))) { sum += t.amount; n++; }
+    const ms = monthRange(`${y}-01`, `${y}-12`).filter((m) => m >= first && m <= end && !isEx(m)).length;
+    return [y, sum, n, ms];
   }).filter(([, , n]) => n);
   const body = document.createElement('div');
-  body.innerHTML = `<p class="small ink2">Ultimi 24 mesi, con media mobile a 3 mesi.</p>
+  body.innerHTML = `<p class="small ink2">Ultimi 24 mesi, con media mobile a 3 mesi${excl.size ? '. I mesi esclusi non sono contati' : ''}.</p>
     <div class="chart-box"></div>
     <div class="table-wrap" style="margin-top:14px"><table class="data"><thead><tr><th>Anno</th><th>Totale</th><th>Movimenti</th><th>Media al mese</th></tr></thead><tbody>
-    ${perYear.reverse().map(([y, sum, n]) => {
-      const nm = y === today().slice(0, 4) ? +today().slice(5, 7) : y === yrs[0] ? 13 - +firstMonth().slice(5, 7) : 12;
-      return `<tr><td>${y}</td><td>${fmtNum(sum)}</td><td>${n}</td><td>${fmtNum(Math.round(sum / nm))}</td></tr>`;
-    }).join('')}</tbody></table></div>
+    ${perYear.reverse().map(([y, sum, n, ms]) => `<tr><td>${y}</td><td>${fmtNum(sum)}</td><td>${n}</td><td>${fmtNum(Math.round(sum / (ms || 1)))}</td></tr>`).join('')}</tbody></table></div>
     <button class="btn block ghost" style="margin-top:14px" data-go>Vedi i movimenti</button>`;
   let chart = null;
   const sh = sheet({ title: `${c.icon || ''} ${c.name}`, body, onClose: () => chart?.destroy() });
@@ -283,6 +331,7 @@ function voceSeries(voce, months) {
 function voceLabel(voce) {
   return voce === 'exp' ? 'Tutte le uscite' : voce === 'inc' ? 'Tutte le entrate' : voce === 'net' ? 'Risparmio' : S.cat.get(voce)?.name || '';
 }
+const mm2 = (i) => String(i + 1).padStart(2, '0');
 
 function renderCmp(el) {
   const s = state.cmp;
@@ -302,77 +351,82 @@ function renderCmp(el) {
     </div>
     ${s.mode === 'years' ? `<div class="chips year-chips" style="margin-bottom:10px">${yrs.map((y) => `<button class="chip ${s.years.includes(y) ? 'on' : ''}" data-year="${y}"><i style="background:${yearColor(y)}"></i>${y}</button>`).join('')}</div>
       <label class="remember" style="margin:0 2px 12px;font-size:14px"><input type="checkbox" data-k="cum" ${s.cumulative ? 'checked' : ''}> Mostra il progressivo dall'inizio dell'anno</label>` : ''}
-    <div class="card chart-card"><div class="chart-title"><h3 id="ttl"></h3><p id="sub"></p></div><div class="chart-box"></div><div id="lg"></div><div class="kpis" id="kpi"></div><div id="tbl"></div></div>`;
+    <div class="card chart-card"><div class="chart-title"><h3 id="ttl"></h3><p id="sub"></p></div><div class="chart-box"></div><div class="kpis" id="kpi"></div><div id="tbl"></div></div>`;
   el.onclick = (e) => {
     const m = e.target.closest('[data-mode]');
-    if (m) { s.mode = m.dataset.mode; destroyCharts(); renderCmp(el); return; }
+    if (m) { s.mode = m.dataset.mode; keepSel = null; rerender(); return; }
     const y = e.target.closest('[data-year]');
     if (y) {
       const v = y.dataset.year;
       s.years = s.years.includes(v) ? s.years.filter((x) => x !== v) : [...s.years, v].sort();
       if (!s.years.length) s.years = [v];
-      destroyCharts(); renderCmp(el);
+      rerender();
     }
   };
   el.onchange = (e) => {
     const k = e.target.dataset.k;
     if (k === 'voce') s.voce = e.target.value;
-    if (k === 'month') s.month = e.target.value;
+    if (k === 'month') { s.month = e.target.value; keepSel = null; }
     if (k === 'cum') s.cumulative = e.target.checked;
-    destroyCharts(); renderCmp(el);
+    rerender();
   };
   const label = voceLabel(s.voce);
   const nowY = today().slice(0, 4), nowM = +today().slice(5, 7);
+  const first = firstMonth();
   if (s.mode === 'years') {
-    const ds = [], lg = [], tRows = MONTHS_SHORT.map((m) => [cap(m)]);
-    const totals = [];
+    const ds = [];
+    const per = {};
     for (const y of s.years) {
       const months = monthRange(`${y}-01`, `${y}-12`);
-      let v = voceSeries(s.voce, months);
       const lastM = y === nowY ? nowM : 12;
-      v = v.map((x, i) => (i < lastM ? x : null));
-      if (s.cumulative) { let acc = 0; v = v.map((x) => (x == null ? null : (acc += x))); }
-      const col = yearColor(y);
-      ds.push(lineDs(y, v, col, { dots: true }));
-      lg.push([y, col, 'line']);
-      v.forEach((x, i) => tRows[i].push(cell(x)));
-      const raw = voceSeries(s.voce, months).slice(0, lastM);
-      totals.push([y, raw.reduce((a, b) => a + b, 0), lastM]);
+      const full = voceSeries(s.voce, months);
+      const raw = full.map((x, i) => (i < lastM && months[i] >= first && !isEx(months[i]) ? x : null));
+      let v = raw;
+      if (s.cumulative) { let acc = 0; v = raw.map((x, i) => (i >= lastM || months[i] < first ? null : (acc += x ?? 0))); }
+      per[y] = { raw, full, lastM };
+      ds.push(lineDs(y, v, yearColor(y), { dots: true }));
     }
-    tRows.push(['Totale', ...totals.map(([, t]) => `<b>${fmtNum(t)}</b>`)]);
+    const valid = (y, i) => i < per[y].lastM && `${y}-${mm2(i)}` >= first;
+    const rows = MONTHS.map((m, i) => ({
+      label: cap(MONTHS_SHORT[i]), key: `*-${mm2(i)}`,
+      cells: s.years.map((y) => (valid(y, i) ? { v: cell(per[y].full[i]), key: `${y}-${mm2(i)}` } : { v: '—' })),
+    }));
+    rows.push({ label: 'Totale', cells: s.years.map((y) => ({ v: `<b>${fmtNum(sumOf(per[y].raw))}</b>` })) });
+    rows.push({ label: 'Media al mese', cells: s.years.map((y) => ({ v: fmtNum(avgOf(per[y].raw)) })) });
     $('#ttl').textContent = `${label}${s.cumulative ? ', progressivo' : ''} mese per mese`;
     $('#sub').textContent = s.years.includes(nowY) ? `Il ${nowY} arriva fino a ${MONTHS[nowM - 1]}` : `${s.years.join(', ')}`;
-    $('#lg').innerHTML = '';
-    // KPI: confronto dello stesso periodo tra gli ultimi due anni selezionati
+    // confronto tra gli ultimi due anni scelti: media al mese sugli stessi mesi, senza quelli esclusi
     const sel = s.years.slice(-2);
     if (sel.length === 2) {
-      const upTo = sel[1] === nowY ? nowM : 12;
-      const a = voceSeries(s.voce, monthRange(`${sel[0]}-01`, `${sel[0]}-12`)).slice(0, upTo).reduce((x, y) => x + y, 0);
-      const b = voceSeries(s.voce, monthRange(`${sel[1]}-01`, `${sel[1]}-12`)).slice(0, upTo).reduce((x, y) => x + y, 0);
-      const d = a ? Math.round(((b - a) / Math.abs(a)) * 1000) / 10 : null;
-      const per = upTo === 12 ? 'anno intero' : `gen–${MONTHS_SHORT[upTo - 1]}`;
-      $('#kpi').innerHTML = `<div><span>${sel[0]} (${per})</span><b>${fmtEur(a, { decimals: 0 })}</b></div><div><span>${sel[1]} (${per})</span><b>${fmtEur(b, { decimals: 0 })}</b></div><div><span>Differenza</span><b>${d == null ? '—' : `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toLocaleString('it-IT')}%`}</b></div>`;
+      const upTo = Math.min(per[sel[0]].lastM, per[sel[1]].lastM);
+      const a = avgOf(per[sel[0]].raw.slice(0, upTo)), b = avgOf(per[sel[1]].raw.slice(0, upTo));
+      const span = upTo === 12 ? 'anno intero' : `gen–${MONTHS_SHORT[upTo - 1]}`;
+      $('#kpi').innerHTML = `<div><span>${sel[0]}, media al mese</span><b>${fmtEur(a, { decimals: 0 })}</b></div><div><span>${sel[1]}, media al mese</span><b>${fmtEur(b, { decimals: 0 })}</b></div><div><span>Differenza (${span})</span><b>${pctTxt(pct(a, b))}</b></div>`;
     } else $('#kpi').innerHTML = '';
-    $('#tbl').innerHTML = tableHtml(['Mese', ...s.years], tRows);
-    plot(el, { labels: MONTHS_SHORT.map(cap), tips: MONTHS.map(cap), series: ds, label: 'Confronto tra anni', select: (s.years.includes(nowY) ? nowM : 12) - 1 });
+    $('#tbl').innerHTML = tableHtml(['Mese', ...s.years], rows);
+    plot(el, {
+      labels: MONTHS_SHORT.map(cap), tips: MONTHS.map(cap), series: ds, label: 'Confronto tra anni', select: (s.years.includes(nowY) ? nowM : 12) - 1,
+      pointKey: (si, i) => { const y = s.years[si]; return valid(y, i) ? exKeyFor(`${y}-${mm2(i)}`) : null; },
+      extra: (i) => { const k = `*-${mm2(i)}`; return { key: k, label: excl.has(k) ? `Rimetti ${MONTHS[i]}` : `Escludi ${MONTHS[i]} da tutti gli anni` }; },
+    });
   } else {
     const m = String(s.month).padStart(2, '0');
-    const ys = yrs.filter((y) => `${y}-${m}` >= firstMonth() && (y < nowY || +m <= nowM));
-    const vals = ys.map((y) => voceSeries(s.voce, [`${y}-${m}`])[0]);
+    const ys = yrs.filter((y) => `${y}-${m}` >= first && (y < nowY || +m <= nowM));
+    const vals = ys.map((y) => (isEx(`${y}-${m}`) ? null : voceSeries(s.voce, [`${y}-${m}`])[0]));
     const isInc = s.voce === 'inc' || S.cat.get(s.voce)?.type === 'income';
     const col = s.voce === 'net' ? null : css(isInc ? '--inc' : '--exp');
     const colors = vals.map((v) => col || css(v >= 0 ? '--inc' : '--exp'));
     $('#ttl').textContent = `${label}: ${MONTHS[+s.month - 1]} di ogni anno`;
     $('#sub').textContent = ys.includes(nowY) && +m === nowM ? `${cap(MONTHS[nowM - 1])} ${nowY} è ancora in corso` : '';
-    $('#lg').innerHTML = '';
-    const avg = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
-    let maxI = 0; vals.forEach((v, i) => { if (v > vals[maxI]) maxI = i; });
-    $('#kpi').innerHTML = `<div><span>Media degli anni</span><b>${fmtEur(avg, { decimals: 0 })}</b></div><div><span>Anno più alto</span><b>${ys[maxI] || '—'}</b></div><div><span>Anni a confronto</span><b>${ys.length}</b></div>`;
+    let maxI = -1; vals.forEach((v, i) => { if (v != null && (maxI < 0 || v > vals[maxI])) maxI = i; });
+    $('#kpi').innerHTML = `<div><span>Media degli anni</span><b>${fmtEur(avgOf(vals), { decimals: 0 })}</b></div><div><span>Anno più alto</span><b>${maxI >= 0 ? ys[maxI] : '—'}</b></div><div><span>Anni a confronto</span><b>${countOf(vals)}</b></div>`;
     $('#tbl').innerHTML = tableHtml(['Anno', cap(MONTHS[+s.month - 1]), 'Rispetto all\'anno prima'], ys.map((y, i) => {
       const prev = i ? vals[i - 1] : null;
-      const d = prev ? Math.round(((vals[i] - prev) / Math.abs(prev)) * 1000) / 10 : null;
-      return [y, fmtNum(vals[i]), d == null ? '—' : `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toLocaleString('it-IT')}%`];
+      return { label: y, key: `${y}-${m}`, cells: [{ v: cell(vals[i]) }, { v: vals[i] == null || prev == null ? '—' : pctTxt(pct(prev, vals[i])) }] };
     }).reverse());
-    plot(el, { labels: ys, tips: ys.map((y) => `${cap(MONTHS[+s.month - 1])} ${y}`), series: [barDs(label, vals, colors)], label: 'Stesso mese negli anni' });
+    plot(el, {
+      labels: ys, tips: ys.map((y) => `${cap(MONTHS[+s.month - 1])} ${y}`), series: [barDs(label, vals, colors)], label: 'Stesso mese negli anni',
+      extra: (i) => ({ key: exKeyFor(`${ys[i]}-${m}`), label: isEx(`${ys[i]}-${m}`) ? 'Rimetti nel grafico' : `Escludi ${ys[i]}` }),
+    });
   }
 }

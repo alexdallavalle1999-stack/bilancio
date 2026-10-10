@@ -5,7 +5,8 @@ import { monthTotals, balance, activeAccounts, rankedCategories, accName, nextAf
 import { esc, fmtEur, fmtNum, today, addDays, fmtDayShort, fmtDate, ym, ymLabel, MONTHS, cap, uid, parseISO, lastDayOfMonth } from './util.js';
 import { toast, sheet, pickCategory, promptDialog, accountOptions } from './ui.js';
 
-const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '0', '⌫'];
+const KEYS = ['1', '2', '3', '⌫', '4', '5', '6', '−', '7', '8', '9', '+', 'C', '0', ',', '='];
+const OPS = new Set(['⌫', '−', '+', 'C', '=']);
 const WORD = { expense: 'uscita', income: 'entrata', transfer: 'giroconto' };
 const REPEATS = [
   ['', 'Non ripetere'], ['week:1', 'Ogni settimana'], ['month:1', 'Ogni mese'], ['month:2', 'Ogni 2 mesi'],
@@ -13,19 +14,26 @@ const REPEATS = [
 ];
 
 // La bozza sopravvive al cambio di pagina (non al riavvio dell'app)
-const draft = { type: 'expense', digits: '', categoryId: null, date: null, note: '', repeat: '', accountId: null, toAccountId: null };
+const draft = { type: 'expense', terms: [{ op: '+', d: '' }], categoryId: null, date: null, note: '', repeat: '', accountId: null, toAccountId: null };
 
-const cents = () => {
-  if (!draft.digits) return 0;
-  const [i, f = ''] = draft.digits.split(',');
+// L'importo è una piccola somma: termini con segno, es. 12,50 + 8,30 − 2
+const termCents = (d) => {
+  if (!d) return 0;
+  const [i, f = ''] = d.split(',');
   return (parseInt(i || '0', 10) * 100) + parseInt((f + '00').slice(0, 2), 10);
 };
-const shown = () => {
-  if (!draft.digits) return '0';
-  const [i, f] = draft.digits.split(',');
+const fmtTerm = (d) => {
+  if (!d) return '';
+  const [i, f] = d.split(',');
   const int = (i || '0').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   return f === undefined ? int : `${int},${f}`;
 };
+const cents = () => draft.terms.reduce((s, t) => s + (t.op === '−' ? -1 : 1) * termCents(t.d), 0);
+const isCalc = () => draft.terms.length > 1;
+const isEmpty = () => draft.terms.length === 1 && !draft.terms[0].d;
+const shown = () => (isEmpty() ? '0' : isCalc() ? fmtNum(cents()) : fmtTerm(draft.terms[0].d));
+const exprText = () => draft.terms.map((t, i) => `${i ? ` ${t.op} ` : ''}${fmtTerm(t.d)}`).join('');
+const resetAmount = () => { draft.terms = [{ op: '+', d: '' }]; };
 
 function dateLabel(d) {
   if (d === today()) return 'Oggi';
@@ -89,33 +97,48 @@ route('home', (root) => {
         ${t === 'transfer' ? '<button data-type="transfer" class="on">Giroconto</button>' : ''}
       </div>
       <div class="qe-mid">
-        <div class="qe-amount" aria-live="polite"><span class="sign">${t === 'expense' ? '−' : t === 'income' ? '+' : ''}</span><span class="val ${draft.digits ? '' : 'zero'}">${shown()}</span><span class="cur">€</span></div>
+        <div class="qe-amount" aria-live="polite"><div class="qe-expr">${esc(isCalc() ? exprText() : '')}</div><div class="qe-num"><span class="sign">${t === 'expense' ? '−' : t === 'income' ? '+' : ''}</span><span class="val ${isEmpty() ? 'zero' : ''}">${shown()}</span><span class="cur">€</span></div></div>
         ${metaHtml()}
       </div>
       ${chipsHtml()}
-      <div class="qe-keys">${KEYS.map((k) => `<button data-k="${k}" ${k === '⌫' ? 'aria-label="Cancella (tieni premuto per azzerare)"' : ''}>${k}</button>`).join('')}</div>
+      <div class="qe-keys">${KEYS.map((k) => `<button data-k="${k}" class="${OPS.has(k) ? 'op' : ''}" ${{ '⌫': 'aria-label="Cancella"', C: 'aria-label="Azzera"', '−': 'aria-label="Meno"', '+': 'aria-label="Più"', '=': 'aria-label="Calcola il totale"' }[k] || ''}>${k}</button>`).join('')}</div>
       <button class="btn block save-btn qe-save" data-act="save">Salva ${WORD[t]}</button>`;
   }
 
   function updateAmount() {
     const v = el.querySelector('.qe-amount .val');
     v.textContent = shown();
-    v.classList.toggle('zero', !draft.digits);
+    v.classList.toggle('zero', isEmpty());
+    v.classList.toggle('neg', cents() < 0);
+    el.querySelector('.qe-expr').textContent = isCalc() ? exprText() : '';
   }
 
   function press(k) {
-    let d = draft.digits;
-    if (k === '⌫') d = d.slice(0, -1);
-    else if (k === ',') { if (!d.includes(',')) d = (d || '0') + ','; }
-    else {
-      const [i, f] = d.split(',');
-      if (f !== undefined) { if (f.length >= 2) return; d += k; }
-      else if (i === '0') d = k;
+    const terms = draft.terms;
+    const cur = terms[terms.length - 1];
+    if (k === 'C') resetAmount();
+    else if (k === '=') {
+      const tot = cents();
+      if (tot < 0) { toast('Il totale è negativo'); return; }
+      const e = Math.floor(tot / 100), f = tot % 100;
+      draft.terms = [{ op: '+', d: tot ? `${e}${f ? ',' + String(f).padStart(2, '0').replace(/0$/, '') : ''}` : '' }];
+    } else if (k === '+' || k === '−') {
+      if (!cur.d && terms.length > 1) cur.op = k;
+      else if (!cur.d) return;
+      else if (terms.length < 30) terms.push({ op: k, d: '' });
+    } else if (k === '⌫') {
+      if (cur.d) cur.d = cur.d.slice(0, -1);
+      else if (terms.length > 1) terms.pop();
+    } else if (k === ',') {
+      if (!cur.d.includes(',')) cur.d = (cur.d || '0') + ',';
+    } else {
+      const [i, f] = cur.d.split(',');
+      if (f !== undefined) { if (f.length >= 2) return; cur.d += k; }
+      else if (i === '0') cur.d = k === '0' ? '0' : k;
       else if (i.length >= 7) return;
-      else d += k;
+      else cur.d += k;
+      if (cur.d === '0' && terms.length === 1) cur.d = '';
     }
-    if (d === '0' && k === '0' && !draft.digits) d = '';
-    draft.digits = d;
     updateAmount();
   }
 
@@ -130,6 +153,7 @@ route('home', (root) => {
   async function save() {
     const amount = cents();
     if (!amount) { flash('.qe-amount'); toast('Scrivi l\'importo'); return; }
+    if (amount < 0) { flash('.qe-amount'); toast('Il totale è negativo'); return; }
     if (draft.type !== 'transfer' && !draft.categoryId) { flash('.qe-chips'); toast('Scegli una voce'); return; }
     if (draft.type === 'transfer' && (!draft.toAccountId || draft.toAccountId === draft.accountId)) { toast('Scegli due conti diversi'); return; }
     const date = draft.date || today();
@@ -153,7 +177,7 @@ route('home', (root) => {
     }
     let saved = null;
     if (!draft.repeat || date <= today()) saved = await put('transactions', { id: uid('t'), ...base, source: 'manual', bank: null, importKey: null, recurringId });
-    draft.digits = ''; draft.categoryId = null; draft.note = ''; draft.repeat = '';
+    resetAmount(); draft.categoryId = null; draft.note = ''; draft.repeat = '';
     if (draft.type === 'transfer') draft.type = 'expense';
     draw();
     toast(msg, saved ? { action: 'Annulla', onAction: () => del('transactions', saved.id) } : {});
@@ -246,7 +270,7 @@ route('home', (root) => {
   // tieni premuto ⌫ per azzerare
   let hold = null;
   el.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('[data-k="⌫"]')) hold = setTimeout(() => { draft.digits = ''; updateAmount(); hold = null; }, 550);
+    if (e.target.closest('[data-k="⌫"]')) hold = setTimeout(() => { resetAmount(); updateAmount(); hold = null; }, 550);
   });
   const stopHold = () => { clearTimeout(hold); hold = null; };
   el.addEventListener('pointerup', stopHold);
@@ -257,6 +281,10 @@ route('home', (root) => {
     if (document.querySelector('dialog[open]') || e.target.closest?.('input, select, textarea')) return;
     if (/^[0-9]$/.test(e.key)) press(e.key);
     else if (e.key === ',' || e.key === '.') press(',');
+    else if (e.key === '+') press('+');
+    else if (e.key === '-') press('−');
+    else if (e.key === '=') press('=');
+    else if (e.key === 'Escape') press('C');
     else if (e.key === 'Backspace') press('⌫');
     else if (e.key === 'Enter') save();
     else return;

@@ -32,7 +32,7 @@ export function drawChart(box, cfg) {
   const read = box.querySelector('.cx-read');
   const svg = box.querySelector('svg');
   const n = cfg.labels.length;
-  let sel = cfg.select ?? n - 1;
+  let sel = cfg.select != null && cfg.select >= 0 && cfg.select < n ? cfg.select : n - 1;
   let geo = null;
 
   function render() {
@@ -104,14 +104,20 @@ export function drawChart(box, cfg) {
   function readout() {
     if (sel == null || sel < 0 || sel >= n) { read.innerHTML = '<span class="muted">Tocca il grafico per leggere i valori</span>'; return; }
     const parts = cfg.series
-      .filter((ser) => !ser.hideInReadout)
-      .map((ser) => {
+      .map((ser, si) => {
+        if (ser.hideInReadout) return '';
         const v = ser.values[sel];
         const col = ser.colors ? ser.colors[sel] : ser.color;
-        return `<span class="cx-r"><i class="${ser.type === 'line' ? 'ln' : ''}" style="background:${col}"></i>${esc(ser.name)} <b>${v == null ? '—' : esc(cfg.value ? cfg.value(v) : v)}</b></span>`;
+        const key = cfg.pointKey?.(si, sel);
+        const off = key && cfg.isOff?.(key);
+        const val = off ? 'escluso' : v == null ? '—' : cfg.value ? cfg.value(v) : v;
+        const inner = `<i class="${ser.type === 'line' ? 'ln' : ''}" style="background:${col}"></i>${esc(ser.name)} <b>${esc(val)}</b>`;
+        return key ? `<button type="button" class="cx-r tg ${off ? 'off' : ''}" data-key="${esc(key)}">${inner}</button>` : `<span class="cx-r">${inner}</span>`;
       });
-    read.innerHTML = `<span class="cx-when">${esc((cfg.tips || cfg.labels)[sel])}</span>${parts.join('')}`;
+    const ex = cfg.extra?.(sel);
+    read.innerHTML = `<span class="cx-when">${esc((cfg.tips || cfg.labels)[sel])}${ex ? `<button type="button" class="cx-act" data-key="${esc(ex.key)}">${esc(ex.label)}</button>` : ''}</span>${parts.join('')}`;
   }
+  read.addEventListener('click', (e) => { const b = e.target.closest('[data-key]'); if (b) cfg.onToggle?.(b.dataset.key, sel); });
 
   function pick(ev) {
     if (!geo) return;
@@ -119,7 +125,7 @@ export function drawChart(box, cfg) {
     const scale = r.width ? Number(svg.getAttribute('width')) / r.width : 1;
     const x = (ev.clientX - r.left) * scale;
     const i = Math.floor((x - geo.pad.l) / geo.band);
-    if (i >= 0 && i < n && i !== sel) { sel = i; render(); }
+    if (i >= 0 && i < n && i !== sel) { sel = i; render(); cfg.onSelect?.(i); }
   }
   let down = false;
   svg.addEventListener('pointerdown', (e) => { down = true; pick(e); });
@@ -127,8 +133,8 @@ export function drawChart(box, cfg) {
   const onUp = () => { down = false; };
   window.addEventListener('pointerup', onUp);
   svg.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowLeft' && sel > 0) { sel--; render(); e.preventDefault(); }
-    if (e.key === 'ArrowRight' && sel < n - 1) { sel++; render(); e.preventDefault(); }
+    if (e.key === 'ArrowLeft' && sel > 0) { sel--; render(); cfg.onSelect?.(sel); e.preventDefault(); }
+    if (e.key === 'ArrowRight' && sel < n - 1) { sel++; render(); cfg.onSelect?.(sel); e.preventDefault(); }
   });
 
   let raf = 0;
