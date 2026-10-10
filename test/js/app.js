@@ -53,7 +53,7 @@ export function updateBadges() {
   const days = st.lastBackupAt ? daysBetween(st.lastBackupAt.slice(0, 10), today()) : null;
   const due = S.transactions.length > 0 && (st.changesSinceBackup || 0) > 0 && (days == null || days >= (st.backupEveryDays || 7));
   const dot = document.querySelector('#tabbar [data-tab="altro"] .dot');
-  if (dot) dot.hidden = !due;
+  if (dot) dot.hidden = !(due || (st.dropbox?.refresh && st.dropbox?.lastError));
 }
 
 onChange(() => {
@@ -436,6 +436,7 @@ async function start() {
   await import('./more.js');
   await import('./stats.js');
   await import('./importer.js');
+  (await import('./dropbox.js')).startAuto();
   const n = await runRecurring();
   if (n) toast(n === 1 ? 'Aggiunto 1 movimento ricorrente' : `Aggiunti ${n} movimenti ricorrenti`);
   window.addEventListener('hashchange', renderRoute);

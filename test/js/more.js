@@ -4,7 +4,8 @@ import { S, put, putMany, del, delMany, setSetting, getSecret, isPersisted } fro
 import { balance, catsOfType, describeRecurring, nextAfter, firstOccurrence, accName, activeAccounts } from './model.js';
 import { $, esc, fmtEur, fmtNum, fmtDate, today, uid, parseAmount, centsToInput, daysBetween, parseISO, lastDayOfMonth, plural } from './util.js';
 import { toast, sheet, confirmDialog, promptDialog, pickCategory, editCategory, accountOptions, ICONS } from './ui.js';
-import { makeBackup, restoreFromFile, exportCsv, askPassword } from './backup.js';
+import { makeBackup, restoreFromFile, restoreFromText, exportCsv, askPassword } from './backup.js';
+import * as dbx from './dropbox.js';
 
 const head = (title, back = '#/altro') => `<div class="page-head"><a class="icon-btn" href="${back}" aria-label="Indietro">${ICONS.back}</a><h1>${esc(title)}</h1></div>`;
 
@@ -17,10 +18,10 @@ route('altro', (root) => {
   const days = last ? daysBetween(last.slice(0, 10), today()) : null;
   const due = S.transactions.length > 0 && (st.changesSinceBackup || 0) > 0 && (days == null || days >= (st.backupEveryDays || 7));
   root.innerHTML = `<div class="page-head"><h1>Altro</h1></div>
-    ${due ? `<div class="banner" style="margin-bottom:14px"><span class="grow">${days == null ? 'Non hai ancora fatto un backup.' : `Ultimo backup ${days} giorni fa.`} Salvane uno su Drive.</span><button class="btn small" data-act="backup">Backup</button></div>` : ''}
+    ${due || dbx.status()?.lastError ? `<div class="banner" style="margin-bottom:14px"><span class="grow">${dbx.status()?.lastError ? esc(dbx.status().lastError) : days == null ? 'Non hai ancora fatto un backup.' : `Ultimo backup ${days} giorni fa.`}${dbx.isConnected() ? '' : ' Salvane uno.'}</span>${dbx.isConnected() ? '<a class="btn small" href="#/altro/backup">Controlla</a>' : '<button class="btn small" data-act="backup">Backup</button>'}</div>` : ''}
     <div class="menu">
       <a href="#/altro/importa"><span class="ic">📥</span><span class="grow">Importa estratto conto<small>PDF o Excel BBVA: le spese vengono classificate da sole</small></span><span class="chev">›</span></a>
-      <a href="#/altro/backup"><span class="ic">🔒</span><span class="grow">Backup e ripristino<small>${last ? `Ultimo backup il ${fmtDate(last.slice(0, 10))}` : 'Nessun backup ancora'}</small></span><span class="chev">›</span></a>
+      <a href="#/altro/backup"><span class="ic">🔒</span><span class="grow">Backup e ripristino<small>${dbx.isConnected() ? `Automatico su Dropbox${last ? ` · ultimo il ${fmtDate(last.slice(0, 10))}` : ''}` : last ? `Ultimo backup il ${fmtDate(last.slice(0, 10))}` : 'Nessun backup ancora'}</small></span><span class="chev">›</span></a>
     </div>
     <div class="menu" style="margin-top:14px">
       <a href="#/altro/ricorrenti"><span class="ic">↻</span><span class="grow">Spese ricorrenti<small>${nRec ? plural(nRec, 'attiva', 'attive') : 'Abbonamenti, affitto, rate…'}</small></span><span class="chev">›</span></a>
@@ -37,35 +38,131 @@ route('altro', (root) => {
 });
 
 /* ---------- Backup ---------- */
-route('backup', async (root, params) => {
+function whenLabel(isoStr) {
+  if (!isoStr) return 'mai';
+  const d = isoStr.slice(0, 10);
+  const t = new Date(isoStr).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  const days = daysBetween(new Date(isoStr).toLocaleDateString('sv-SE'), today());
+  return days === 0 ? `oggi alle ${t}` : days === 1 ? `ieri alle ${t}` : `${fmtDate(d)} (${days} giorni fa)`;
+}
+
+function dropboxCard() {
+  if (!dbx.isConfigured()) return '';
+  if (!dbx.isConnected()) {
+    return `<div class="card stack">
+      <h3>Backup automatico su Dropbox</h3>
+      <p class="small ink2">Una copia cifrata al giorno, fatta in automatico mentre usi l'app. Su Dropbox restano le ultime ${dbx.KEEP}.</p>
+      <button class="btn block" data-act="dbx-connect">Collega Dropbox</button>
+      <p class="tiny muted">Telefono nuovo? Collega Dropbox e potrai ripristinare l'ultimo backup.</p>
+    </div>`;
+  }
+  const d = dbx.status();
+  return `<div class="card stack">
+    <div class="row between"><h3>Backup automatico su Dropbox</h3><span class="tag" style="${d.lastError ? '' : 'background:var(--inc-soft);color:var(--inc)'}">${d.lastError ? 'da controllare' : 'attivo'}</span></div>
+    ${d.lastError ? `<div class="banner" style="font-size:14px">${esc(d.lastError)}</div>` : ''}
+    <div>
+      <div class="kv"><span>Ultimo backup su Dropbox</span><b>${esc(whenLabel(d.lastAt))}</b></div>
+      ${d.email ? `<div class="kv"><span>Account</span><b>${esc(d.email)}</b></div>` : ''}
+      <div class="kv"><span>Copie conservate</span><b>${d.copies != null ? `${d.copies} su ${dbx.KEEP}` : '—'}</b></div>
+    </div>
+    <div class="row" style="flex-wrap:wrap">
+      <button class="btn small" data-act="dbx-now">Fai il backup ora</button>
+      <button class="btn small ghost" data-act="dbx-restore">Ripristina da Dropbox</button>
+      <button class="btn small ghost" data-act="dbx-off">Scollega</button>
+    </div>
+  </div>`;
+}
+
+async function connectDropbox() {
+  // il backup automatico ha bisogno della password memorizzata su questo telefono
+  if (!(await getSecret('backupPassword'))) {
+    const pw = await askPassword({ forceNew: true, mustRemember: true, note: 'Se hai già dei backup (per esempio da un altro telefono), scrivi la stessa password di allora.' });
+    if (!pw) return false;
+  }
+  const url = await dbx.authUrl();
+  return new Promise((resolve) => {
+    let ok = false;
+    const f = document.createElement('form');
+    f.className = 'stack';
+    f.innerHTML = `
+      <ol class="steps">
+        <li>Tocca <b>Apri Dropbox</b>, accedi e premi <b>Consenti</b>.</li>
+        <li>Dropbox ti mostra un codice: copialo.</li>
+        <li>Torna qui, incollalo sotto e tocca <b>Collega</b>.</li>
+      </ol>
+      <a class="btn block ghost" href="${esc(url)}" target="_blank" rel="noopener">Apri Dropbox</a>
+      <label class="field"><span>Codice di Dropbox</span><input class="input" name="code" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Incolla qui il codice"></label>
+      <p class="tiny" data-err style="color:var(--exp)"></p>
+      <button class="btn block">Collega</button>`;
+    const sh = sheet({ title: 'Collega Dropbox', body: f, onClose: () => resolve(ok) });
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const code = f.querySelector('[name=code]').value.trim();
+      if (!code) { f.querySelector('[data-err]').textContent = 'Incolla il codice che ti ha dato Dropbox.'; return; }
+      const btn = f.querySelector('button.btn.block:last-child');
+      btn.disabled = true; btn.textContent = 'Collego…';
+      try { await dbx.connect(code); ok = true; sh.close(); }
+      catch (err) { f.querySelector('[data-err]').textContent = err.message; btn.disabled = false; btn.textContent = 'Collega'; }
+    };
+  });
+}
+
+async function restoreFromDropbox() {
+  let list;
+  try { list = await dbx.listBackups(); } catch (e) { toast(e.message); return false; }
+  if (!list.length) { toast('Su Dropbox non ci sono ancora backup'); return false; }
+  return new Promise((resolve) => {
+    let picked = false;
+    const body = document.createElement('div');
+    body.className = 'menu';
+    body.style.boxShadow = 'none';
+    body.innerHTML = list.map((b, i) => `<button data-i="${i}"><span class="ic">🗂️</span><span class="grow">${esc(fmtDate(b.date))}${i === 0 ? ' · il più recente' : ''}<small>${fmtNum(Math.max(1, Math.round(b.size / 1024)) * 100, { decimals: 0 })} KB · salvato ${esc(whenLabel(b.modified))}</small></span><span class="chev">›</span></button>`).join('');
+    const sh = sheet({ title: 'Quale backup ripristinare?', body, onClose: () => { if (!picked) resolve(false); } });
+    body.onclick = async (e) => {
+      const b = e.target.closest('[data-i]');
+      if (!b) return;
+      picked = true;
+      sh.close();
+      try {
+        toast('Scarico il backup…', { ms: 1500 });
+        const text = await dbx.download(list[+b.dataset.i].path);
+        resolve(await restoreFromText(text));
+      } catch (err) { toast(err.message); resolve(false); }
+    };
+  });
+}
+
+route('backup', async (root) => {
   const persisted = await isPersisted();
   const hasPw = !!(await getSecret('backupPassword'));
   const st = S.settings;
-  const days = st.lastBackupAt ? daysBetween(st.lastBackupAt.slice(0, 10), today()) : null;
   root.innerHTML = `${head('Backup e ripristino')}
-    <div class="card">
-      <div class="kv"><span>Ultimo backup</span><b>${st.lastBackupAt ? `${fmtDate(st.lastBackupAt.slice(0, 10))}${days === 0 ? ' (oggi)' : days === 1 ? ' (ieri)' : ` (${days} giorni fa)`}` : 'mai'}</b></div>
+    ${dropboxCard()}
+    <div class="card" style="margin-top:14px">
+      <div class="kv"><span>Ultimo backup</span><b>${esc(whenLabel(st.lastBackupAt))}</b></div>
       <div class="kv"><span>Modifiche da allora</span><b>${fmtNum((st.changesSinceBackup || 0) * 100, { decimals: 0 })}</b></div>
       <div class="kv"><span>Movimenti salvati</span><b>${fmtNum(S.transactions.length * 100, { decimals: 0 })}</b></div>
       <div class="kv"><span>Archivio protetto dalla pulizia automatica</span><b>${persisted === true ? 'sì' : persisted === false ? 'non ancora' : '—'}</b></div>
     </div>
-    <button class="btn block" data-act="share" style="margin-top:16px;min-height:54px">Crea backup e salva su Drive</button>
-    <p class="tiny muted" style="margin:8px 4px 0">Si apre il menu Condividi: scegli “Drive” (o un'altra app) e salva il file. È cifrato con la tua password.</p>
+
+    <div class="section-title"><h2>Backup manuale</h2></div>
+    <button class="btn block ${dbx.isConnected() ? 'ghost' : ''}" data-act="share" style="min-height:52px">Crea un backup e condividilo</button>
+    <p class="tiny muted" style="margin:8px 4px 0">Si apre il menu Condividi: puoi salvarlo su Drive, mandarlo per email… È cifrato con la tua password.</p>
     <button class="btn block ghost" data-act="download" style="margin-top:12px">Scarica il backup nella memoria del telefono</button>
 
-    <div class="section-title"><h2>Promemoria</h2></div>
+    <div class="section-title"><h2>Password e promemoria</h2></div>
     <div class="card">
-      <label class="field"><span>Ricordami di fare il backup</span>
-        <select class="input" data-f="every">${[3, 7, 14, 30].map((d) => `<option value="${d}" ${st.backupEveryDays === d ? 'selected' : ''}>ogni ${d} giorni</option>`).join('')}</select></label>
+      <label class="field"><span>Avvisami se non c'è un backup da</span>
+        <select class="input" data-f="every">${[3, 7, 14, 30].map((d) => `<option value="${d}" ${st.backupEveryDays === d ? 'selected' : ''}>${d} giorni</option>`).join('')}</select></label>
       <div class="row" style="margin-top:12px;flex-wrap:wrap">
         <button class="btn small ghost" data-act="pw">${hasPw ? 'Cambia password' : 'Imposta password'}</button>
         ${hasPw ? '<button class="btn small ghost" data-act="forget">Dimentica password su questo telefono</button>' : ''}
       </div>
     </div>
 
-    <div class="section-title"><h2>Ripristina</h2></div>
+    <div class="section-title"><h2>Ripristina da un file</h2></div>
     <div class="card stack">
-      <p class="small ink2">Per passare a un nuovo telefono: installa Bilancio, apri questa pagina, tocca “Scegli file” e prendi l'ultimo backup da Drive. Ti verrà chiesta la password. Qui puoi anche caricare il file dei dati iniziali.</p>
+      <p class="small ink2">Scegli un file di backup (da Drive, dai Download…). Ti verrà chiesta la password. Qui puoi anche caricare il file dei dati iniziali.</p>
       <label class="btn block line" style="position:relative">Scegli file di backup<input type="file" data-f="file" style="position:absolute;inset:0;opacity:0"></label>
     </div>`;
   root.addEventListener('click', async (e) => {
@@ -73,12 +170,35 @@ route('backup', async (root, params) => {
     if (a === 'share') { if (await makeBackup()) go('#/altro/backup'); }
     else if (a === 'download') { if (await makeBackup({ download: true })) go('#/altro/backup'); }
     else if (a === 'pw') {
-      const pw = await askPassword({ forceNew: true });
+      const pw = await askPassword({ forceNew: true, mustRemember: dbx.isConnected() });
       if (pw) toast('Password aggiornata: vale per i prossimi backup');
       go('#/altro/backup');
     } else if (a === 'forget') {
+      if (dbx.isConnected() && !(await confirmDialog({ title: 'Dimenticare la password?', text: 'Senza password memorizzata il backup automatico su Dropbox si ferma.', ok: 'Dimentica', danger: true }))) return;
       await setSetting('backupPassword', null);
       toast('Password rimossa da questo telefono');
+      go('#/altro/backup');
+    } else if (a === 'dbx-connect') {
+      if (!(await connectDropbox())) return;
+      toast('Dropbox collegato');
+      let list = [];
+      try { list = await dbx.listBackups(); } catch { /* */ }
+      if (list.length && (!S.transactions.length || await confirmDialog({ title: 'Su Dropbox ci sono già dei backup', text: `Il più recente è del ${fmtDate(list[0].date)}. Vuoi ripristinarlo su questo telefono? Se no, da adesso i backup partiranno da qui.`, ok: 'Scegli un backup', cancel: 'No, continua' }))) {
+        if (await restoreFromDropbox()) { go('#/home'); return; }
+      } else if (S.transactions.length) {
+        try { await dbx.backupNow(); toast('Primo backup su Dropbox fatto'); } catch (err) { toast(err.message); }
+      }
+      go('#/altro/backup');
+    } else if (a === 'dbx-now') {
+      toast('Backup in corso…', { ms: 1500 });
+      try { await dbx.backupNow(); toast('Backup su Dropbox fatto'); } catch (err) { toast(err.message); }
+      go('#/altro/backup');
+    } else if (a === 'dbx-restore') {
+      if (await restoreFromDropbox()) go('#/home');
+    } else if (a === 'dbx-off') {
+      if (!(await confirmDialog({ title: 'Scollegare Dropbox?', text: 'Il backup automatico si ferma. I backup già su Dropbox restano lì.', ok: 'Scollega', danger: true }))) return;
+      await dbx.disconnect();
+      toast('Dropbox scollegato');
       go('#/altro/backup');
     }
   });
@@ -92,9 +212,6 @@ route('backup', async (root, params) => {
       catch (err) { toast(err.message); }
     }
   });
-  if (params.quick && S.transactions.length) {
-    root.querySelector('[data-act="share"]').focus();
-  }
 }, { tab: 'altro', live: false });
 
 /* ---------- Spese ricorrenti ---------- */

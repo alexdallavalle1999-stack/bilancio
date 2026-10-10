@@ -2,11 +2,11 @@
 // Ogni copia (app vera e copia di prova) ha la sua cache, distinta dal percorso.
 const SCOPE = new URL(self.registration.scope).pathname;
 const PREFIX = `bilancio:${SCOPE}:`;
-const VERSION = PREFIX + '2.2.0';
+const VERSION = PREFIX + '2.3.0';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/home.js', 'js/charts.js', 'js/store.js', 'js/model.js', 'js/util.js', 'js/ui.js', 'js/bank.js',
-  'js/importer.js', 'js/stats.js', 'js/more.js', 'js/backup.js',
+  'js/importer.js', 'js/stats.js', 'js/more.js', 'js/backup.js', 'js/dropbox.js',
   'lib/xlsx.mini.min.js', 'lib/pdf.min.js', 'lib/pdf.worker.min.js',
   'fonts/bricolage.woff2', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-180.png',
 ];

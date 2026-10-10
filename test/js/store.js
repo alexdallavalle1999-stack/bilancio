@@ -78,7 +78,8 @@ export async function load() {
   reindex();
 }
 
-const META_KEYS = new Set(['lastBackupAt', 'changesSinceBackup', 'backupPassword']);
+// Impostazioni tecniche: non contano come modifiche e (password, Dropbox) non finiscono nei backup
+const META_KEYS = new Set(['lastBackupAt', 'changesSinceBackup', 'backupPassword', 'dropbox']);
 
 async function bumpChanges(n = 1) {
   S.settings.changesSinceBackup = (S.settings.changesSinceBackup || 0) + n;
@@ -147,6 +148,7 @@ export async function getSecret(k) {
 // Sostituisce tutti i dati (ripristino da backup)
 export async function replaceAll(data) {
   const keepPw = await getSecret('backupPassword');
+  const keepDbx = await getSecret('dropbox');
   await tx([...STORES, 'kv'], 'readwrite', (t) => {
     for (const s of STORES) {
       const os = t.objectStore(s);
@@ -157,8 +159,10 @@ export async function replaceAll(data) {
     kv.clear();
     const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     delete settings.backupPassword;
+    delete settings.dropbox;
     for (const [k, v] of Object.entries(settings)) kv.put({ k, v });
     if (keepPw) kv.put({ k: 'backupPassword', v: keepPw });
+    if (keepDbx) kv.put({ k: 'dropbox', v: keepDbx });
   });
   await load();
   emit('all');
@@ -167,6 +171,7 @@ export async function replaceAll(data) {
 export function exportData() {
   const settings = { ...S.settings };
   delete settings.backupPassword;
+  delete settings.dropbox;
   return {
     categories: S.categories,
     accounts: S.accounts,
