@@ -2,8 +2,8 @@
 import { route } from './app.js';
 import { S, put, del } from './store.js';
 import { monthTotals, balance, activeAccounts, rankedCategories, accName, nextAfter } from './model.js';
-import { esc, fmtEur, fmtNum, today, addDays, fmtDayShort, fmtDate, ym, ymLabel, MONTHS, cap, uid, parseISO, lastDayOfMonth } from './util.js';
-import { toast, sheet, pickCategory, promptDialog, accountOptions } from './ui.js';
+import { esc, fmtEur, fmtNum, today, addDays, fmtDayShort, fmtDate, ym, ymLabel, MONTHS, MONTHS_SHORT, cap, uid, parseISO, lastDayOfMonth } from './util.js';
+import { toast, sheet, pickCategory, promptDialog, accountOptions, ICONS } from './ui.js';
 
 const KEYS = ['1', '2', '3', '⌫', '4', '5', '6', '−', '7', '8', '9', '+', 'C', '0', ',', '='];
 const OPS = new Set(['⌫', '−', '+', 'C', '=']);
@@ -12,6 +12,16 @@ const REPEATS = [
   ['', 'Non ripetere'], ['week:1', 'Ogni settimana'], ['month:1', 'Ogni mese'], ['month:2', 'Ogni 2 mesi'],
   ['month:3', 'Ogni 3 mesi'], ['month:6', 'Ogni 6 mesi'], ['year:1', 'Ogni anno'],
 ];
+
+// Mese mostrato in alto: null = mese corrente. Si sceglie toccando il mese; all'avvio
+// (e quando torni all'app dopo qualche minuto) si riparte sempre dal mese corrente.
+let viewMonth = null;
+const shownMonth = () => viewMonth || ym(today());
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (viewMonth && Date.now() - hiddenAt > 2 * 60000) { viewMonth = null; route.home_live?.(); }
+});
 
 // La bozza sopravvive al cambio di pagina (non al riavvio dell'app)
 const draft = { type: 'expense', terms: [{ op: '+', d: '' }], extra: false, categoryId: null, date: null, note: '', repeat: '', accountId: null, toAccountId: null };
@@ -47,12 +57,53 @@ route('home', (root) => {
   const el = root.firstElementChild;
 
   function header() {
-    const key = ym(today());
+    if (viewMonth === ym(today())) viewMonth = null;
+    const key = shownMonth();
     const { net } = monthTotals(key);
+    const other = !!viewMonth;
     return `<header class="qe-head">
-        <span class="qe-month">${cap(ymLabel(key, { year: false }))}</span>
-        <button class="qe-bal" data-act="summary" aria-label="Riepilogo del mese">Bilancio <b class="${net < 0 ? 'exp' : net > 0 ? 'inc' : ''}">${fmtEur(net, { sign: true })}</b></button>
+        <span class="qe-mwrap ${other ? 'other' : ''}">
+          <button class="qe-month" data-act="month" aria-label="Scegli il mese">${key.slice(0, 4) === today().slice(0, 4) ? cap(ymLabel(key, { year: false })) : cap(ymLabel(key, { short: true })).replace(/ (\d\d)$/, ` ${key.slice(0, 4)}`)}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+          ${other ? '<button class="qe-mback" data-act="thismonth" aria-label="Torna al mese corrente"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>' : ''}
+        </span>
+        <button class="qe-bal" data-act="summary" aria-label="Riepilogo del mese"><span class="lbl">Bilancio</span> <b class="${net < 0 ? 'exp' : net > 0 ? 'inc' : ''}">${fmtEur(net, { sign: true })}</b></button>
       </header>`;
+  }
+  const redrawHeader = () => { const h = el.querySelector('.qe-head'); if (h) h.outerHTML = header(); };
+
+  function monthPicker() {
+    const now = ym(today());
+    const first = S.transactions.length ? S.transactions[0].date.slice(0, 4) : now.slice(0, 4);
+    let year = shownMonth().slice(0, 4);
+    const body = document.createElement('div');
+    const draw = () => {
+      const nowY = now.slice(0, 4);
+      body.innerHTML = `
+        <div class="mp-year">
+          <button class="icon-btn flat" data-y="-1" aria-label="Anno precedente" ${year <= first ? 'disabled' : ''}>${ICONS.prev}</button>
+          <b>${year}</b>
+          <button class="icon-btn flat" data-y="1" aria-label="Anno successivo" ${year >= nowY ? 'disabled' : ''}>${ICONS.next}</button>
+        </div>
+        <div class="mp-grid">${MONTHS_SHORT.map((m, i) => {
+          const k = `${year}-${String(i + 1).padStart(2, '0')}`;
+          const future = k > now;
+          const { net, n } = monthTotals(k);
+          return `<button data-k="${k}" class="${k === shownMonth() ? 'on' : ''} ${k === now ? 'now' : ''}" ${future ? 'disabled' : ''}>
+            <span>${cap(m)}</span><small class="${n ? (net < 0 ? 'exp' : net > 0 ? 'inc' : '') : ''}">${future ? '' : n ? fmtEur(net, { sign: true, decimals: 0 }) : '—'}</small></button>`;
+        }).join('')}</div>
+        ${viewMonth ? `<button class="btn line block" data-k="${now}" style="margin-top:14px">Torna a ${MONTHS[+now.slice(5) - 1]}</button>` : ''}`;
+    };
+    draw();
+    const sh = sheet({ title: 'Scegli il mese', body });
+    body.addEventListener('click', (e) => {
+      const y = e.target.closest('[data-y]');
+      if (y && !y.disabled) { year = String(+year + +y.dataset.y); draw(); return; }
+      const b = e.target.closest('[data-k]');
+      if (!b || b.disabled) return;
+      viewMonth = b.dataset.k === now ? null : b.dataset.k;
+      sh.close();
+      redrawHeader();
+    });
   }
 
   function chipsHtml() {
@@ -186,7 +237,8 @@ route('home', (root) => {
   }
 
   function summarySheet() {
-    const key = ym(today());
+    const key = shownMonth();
+    const cur = !viewMonth;
     const { inc, exp, net } = monthTotals(key);
     const pct = inc > 0 ? Math.round((exp / inc) * 100) : null;
     const body = document.createElement('div');
@@ -195,9 +247,9 @@ route('home', (root) => {
       <div class="kv"><span>Uscite</span><b class="exp">${fmtEur(exp)}</b></div>
       <div class="kv"><span>Bilancio</span><b>${fmtEur(net, { sign: true })}</b></div>
       <div class="ratio ${pct != null && pct > 100 ? 'over' : ''}" style="margin-top:4px"><span style="width:${Math.min(100, pct ?? (exp > 0 ? 100 : 0))}%"></span></div>
-      <p class="tiny muted" style="margin:7px 0 14px">${!inc && !exp ? 'Nessun movimento questo mese' : !inc ? 'Nessuna entrata registrata questo mese' : exp > inc ? `Uscite superiori alle entrate di ${fmtEur(exp - inc)}` : `Hai speso il ${pct}% di quanto è entrato`}</p>
-      ${activeAccounts().map((a) => `<div class="kv"><span>Saldo ${esc(a.name)}</span><b>${fmtEur(balance(a.id))}</b></div>`).join('')}
-      <a class="btn block ghost" href="#/movimenti" style="margin-top:14px">Vedi i movimenti</a>`;
+      <p class="tiny muted" style="margin:7px 0 14px">${!inc && !exp ? `Nessun movimento ${cur ? 'questo mese' : 'in questo mese'}` : !inc ? `Nessuna entrata registrata ${cur ? 'questo mese' : 'in questo mese'}` : exp > inc ? `Uscite superiori alle entrate di ${fmtEur(exp - inc)}` : `Hai speso il ${pct}% di quanto è entrato`}</p>
+      ${cur ? activeAccounts().map((a) => `<div class="kv"><span>Saldo ${esc(a.name)}</span><b>${fmtEur(balance(a.id))}</b></div>`).join('') : ''}
+      <a class="btn block ghost" href="#/movimenti${cur ? '' : `?m=${key}`}" style="margin-top:14px">Vedi i movimenti</a>`;
     const sh = sheet({ title: cap(ymLabel(key)), body });
     body.querySelector('a').addEventListener('click', () => sh.close());
   }
@@ -255,6 +307,8 @@ route('home', (root) => {
     const act = b.dataset.act;
     if (act === 'save') save();
     else if (act === 'summary') summarySheet();
+    else if (act === 'month') monthPicker();
+    else if (act === 'thismonth') { viewMonth = null; redrawHeader(); }
     else if (act === 'options') optionsSheet();
     else if (act === 'morecats') {
       const r = await pickCategory({ type: draft.type, current: draft.categoryId });
@@ -299,6 +353,6 @@ route('home', (root) => {
 
   draw();
   // dati cambiati altrove (es. ricorrenze, annulla): aggiorna solo l'intestazione
-  route.home_live = () => { const h = el.querySelector('.qe-head'); if (h) h.outerHTML = header(); };
+  route.home_live = redrawHeader;
   return () => document.removeEventListener('keydown', onKey);
 }, { live: () => route.home_live?.() });

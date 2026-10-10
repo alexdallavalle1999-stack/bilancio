@@ -2,7 +2,7 @@
 // Ogni copia (app vera e copia di prova) ha la sua cache, distinta dal percorso.
 const SCOPE = new URL(self.registration.scope).pathname;
 const PREFIX = `bilancio:${SCOPE}:`;
-const VERSION = PREFIX + '2.6.0';
+const VERSION = PREFIX + '2.7.0';
 const FILES = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/home.js', 'js/charts.js', 'js/store.js', 'js/model.js', 'js/util.js', 'js/ui.js', 'js/bank.js',
